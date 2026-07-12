@@ -129,14 +129,13 @@ impl App {
             }
         };
 
-        let (new_tab_idx, terminal, runtime) = match created {
+        let (new_tab_idx, new_pane) = match created {
             Ok(result) => result,
             Err(err) => return encode_error(id, "layout_apply_failed", err.to_string()),
         };
         let new_root_pane = self.state.workspaces[ws_idx].tabs[new_tab_idx].root_pane;
-        self.terminal_runtimes.insert(terminal.id.clone(), runtime);
+        self.install_new_pane_runtimes(new_pane);
         self.state.remove_alias_shadowed_by_new_pane(new_root_pane);
-        self.state.terminals.insert(terminal.id.clone(), terminal);
         if let Some(label) = replacement_label {
             self.state.workspaces[ws_idx].tabs[new_tab_idx].set_custom_name(label);
         }
@@ -448,13 +447,9 @@ impl App {
     }
 
     fn attach_new_layout_pane(&mut self, new_pane: NewPane) {
-        self.terminal_runtimes
-            .insert(new_pane.terminal.id.clone(), new_pane.runtime);
         self.state
             .remove_alias_shadowed_by_new_pane(new_pane.pane_id);
-        self.state
-            .terminals
-            .insert(new_pane.terminal.id.clone(), new_pane.terminal);
+        self.install_new_pane_runtimes(new_pane);
     }
 
     fn apply_layout_pane_label(&mut self, ws_idx: usize, pane_id: PaneId, pane: &LayoutPane) {

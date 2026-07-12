@@ -55,7 +55,7 @@ impl AppState {
         }
 
         let cursor = self
-            .runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
+            .displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
             .and_then(|rt| rt.cursor_state(info.inner_rect, true))
             .filter(|cursor| cursor.visible)
             .map(|cursor| {
@@ -291,7 +291,8 @@ impl AppState {
         let Some(ws_idx) = self.active else {
             return;
         };
-        let Some(runtime) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
+        let Some(runtime) =
+            self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
         else {
             return;
         };
@@ -641,9 +642,11 @@ impl AppState {
         let Some(ws_idx) = self.active else {
             return;
         };
-        let Some(runtime) =
-            self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, copy_mode.pane_id)
-        else {
+        let Some(runtime) = self.displayed_runtime_for_pane_in_workspace(
+            terminal_runtimes,
+            ws_idx,
+            copy_mode.pane_id,
+        ) else {
             return;
         };
         let absolute_row =
@@ -746,7 +749,7 @@ impl AppState {
             info.inner_rect.width.saturating_sub(1),
             metrics,
         );
-        self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, copy_mode.pane_id)?
+        self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, copy_mode.pane_id)?
             .extract_selection(&row_selection)
     }
 
@@ -1111,7 +1114,7 @@ mod tests {
     fn copy_mode_viewport_top_row(app: &App, pane_id: crate::layout::PaneId) -> usize {
         let metrics = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("copy mode scroll metrics");
         metrics
@@ -1121,7 +1124,7 @@ mod tests {
 
     fn copy_mode_offset_from_bottom(app: &App, pane_id: crate::layout::PaneId) -> usize {
         app.state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("copy mode scroll metrics")
             .offset_from_bottom
@@ -1132,7 +1135,7 @@ mod tests {
         pane_id: crate::layout::PaneId,
     ) -> crate::pane::ScrollMetrics {
         app.state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("copy mode scroll metrics")
     }
@@ -1293,15 +1296,8 @@ mod tests {
     #[tokio::test]
     async fn copy_mode_clears_when_source_tab_closes_after_focus_away() {
         let (mut app, first_pane, _) = app_with_split_copy_screen(b"alpha\nbeta\n");
-        let survivor_tab = app.state.workspaces[0].test_add_tab(Some("survivor"));
-        let survivor_pane = app.state.workspaces[0].tabs[survivor_tab].root_pane;
-        let survivor_terminal = app.state.workspaces[0].tabs[survivor_tab].panes[&survivor_pane]
-            .attached_terminal_id
-            .clone();
-        app.state.terminals.insert(
-            survivor_terminal.clone(),
-            crate::terminal::TerminalState::new(survivor_terminal, "/tmp".into()),
-        );
+        app.state.workspaces[0].test_add_tab(Some("survivor"));
+        app.state.ensure_test_terminals();
         app.state.enter_copy_mode(&app.terminal_runtimes);
         assert_eq!(
             app.state.copy_mode.as_ref().expect("copy mode").pane_id,
@@ -1615,7 +1611,7 @@ mod tests {
         assert_eq!(copy_mode_offset_from_bottom(&app, pane_id), 0);
 
         app.state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .expect("runtime")
             .test_process_pty_bytes(b"live output\r\n");
         assert_eq!(copy_mode_offset_from_bottom(&app, pane_id), 0);
@@ -1624,7 +1620,7 @@ mod tests {
         assert!(copy_mode_offset_from_bottom(&app, pane_id) > 0);
         let runtime = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .expect("runtime");
         let visible_before = runtime.visible_text();
         runtime.test_process_pty_bytes(b"more output\r\n");

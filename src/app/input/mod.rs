@@ -589,9 +589,12 @@ impl AppState {
             ) {
                 let new_id = new_pane.pane_id;
                 terminal_runtimes.insert(new_pane.terminal.id.clone(), new_pane.runtime);
+                terminal_runtimes.insert(new_pane.back_terminal.id.clone(), new_pane.back_runtime);
                 self.remove_alias_shadowed_by_new_pane(new_id);
                 self.terminals
                     .insert(new_pane.terminal.id.clone(), new_pane.terminal);
+                self.terminals
+                    .insert(new_pane.back_terminal.id.clone(), new_pane.back_terminal);
                 self.record_pane_focus_change(previous_focus, ws_idx, new_id);
                 self.mark_session_dirty();
                 self.mode = Mode::Terminal;

@@ -1456,7 +1456,8 @@ impl AppState {
         lines: usize,
     ) {
         if let Some(ws_idx) = self.active {
-            if let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
+            if let Some(rt) =
+                self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
             {
                 rt.scroll_up(lines);
             }
@@ -1470,7 +1471,8 @@ impl AppState {
         lines: usize,
     ) {
         if let Some(ws_idx) = self.active {
-            if let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
+            if let Some(rt) =
+                self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
             {
                 rt.scroll_down(lines);
             }
@@ -1483,7 +1485,9 @@ impl AppState {
         pane_id: crate::layout::PaneId,
     ) -> Option<crate::pane::ScrollMetrics> {
         self.active
-            .and_then(|i| self.runtime_for_pane_in_workspace(terminal_runtimes, i, pane_id))
+            .and_then(|i| {
+                self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, i, pane_id)
+            })
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
     }
 
@@ -1621,7 +1625,8 @@ impl AppState {
         let Some(ws_idx) = self.active else {
             return false;
         };
-        let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
+        let Some(rt) =
+            self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
         else {
             return false;
         };
@@ -1646,7 +1651,8 @@ impl AppState {
         let Some(ws_idx) = self.active else {
             return false;
         };
-        let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
+        let Some(rt) =
+            self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
         else {
             return false;
         };
@@ -1670,7 +1676,8 @@ impl AppState {
         let Some(ws_idx) = self.active else {
             return false;
         };
-        let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
+        let Some(rt) =
+            self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
         else {
             return false;
         };
@@ -1699,7 +1706,8 @@ impl AppState {
         let Some(ws_idx) = self.active else {
             return false;
         };
-        let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
+        let Some(rt) =
+            self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
         else {
             return false;
         };
@@ -1739,7 +1747,8 @@ impl AppState {
         offset_from_bottom: usize,
     ) {
         for ws_idx in 0..self.workspaces.len() {
-            let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
+            let Some(rt) =
+                self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
             else {
                 continue;
             };
@@ -1763,7 +1772,8 @@ impl AppState {
                     && row < track.y + track.height
             })
         })?;
-        let rt = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)?;
+        let rt =
+            self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)?;
         let metrics = rt.scroll_metrics()?;
         if metrics.max_offset_from_bottom == 0 {
             return None;
@@ -1795,7 +1805,8 @@ impl AppState {
             .iter()
             .find(|info| info.id == pane_id)?;
         let track = crate::ui::pane_scrollbar_rect(info)?;
-        let rt = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)?;
+        let rt =
+            self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)?;
         let metrics = rt.scroll_metrics()?;
         if metrics.max_offset_from_bottom == 0 {
             return None;
@@ -1895,10 +1906,67 @@ mod tests {
 
         let metrics = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("scroll metrics after wheel");
         assert_eq!(metrics.offset_from_bottom, 7);
+    }
+
+    #[tokio::test]
+    async fn terminal_wheel_scrolls_only_the_visible_backside() {
+        let mut app = app_for_mouse_test();
+        let ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        let front_terminal_id = ws.tabs[0]
+            .front_terminal_id(pane_id)
+            .expect("front terminal")
+            .clone();
+        let back_terminal_id = ws.tabs[0].backsides[&pane_id]
+            .pane
+            .attached_terminal_id
+            .clone();
+        let pane_infos = ws.tabs[0].layout.panes(Rect::new(26, 2, 80, 18));
+        let info = pane_infos[0].clone();
+        for terminal_id in [&front_terminal_id, &back_terminal_id] {
+            app.terminal_runtimes.insert(
+                terminal_id.clone(),
+                crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+                    info.inner_rect.width,
+                    info.inner_rect.height,
+                    16 * 1024,
+                    &numbered_lines_bytes(64),
+                ),
+            );
+        }
+
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.view.pane_infos = pane_infos;
+        app.state.mouse_scroll_lines = 7;
+        assert!(app.state.toggle_focused_backside());
+
+        app.handle_mouse(mouse(
+            MouseEventKind::ScrollUp,
+            info.inner_rect.x + 1,
+            info.inner_rect.y + 1,
+        ));
+
+        let front_metrics = app
+            .terminal_runtimes
+            .get(&front_terminal_id)
+            .expect("front runtime")
+            .scroll_metrics()
+            .expect("front scroll metrics");
+        let back_metrics = app
+            .terminal_runtimes
+            .get(&back_terminal_id)
+            .expect("back runtime")
+            .scroll_metrics()
+            .expect("back scroll metrics");
+        assert_eq!(front_metrics.offset_from_bottom, 0);
+        assert_eq!(back_metrics.offset_from_bottom, 7);
     }
 
     #[tokio::test]
@@ -2713,7 +2781,7 @@ mod tests {
     async fn keyboard_context_menu_split_keeps_new_runtime() {
         let mut app = app_for_mouse_test();
         app.state.default_shell = "/usr/bin/true".into();
-        let (workspace, terminal, runtime) = Workspace::new(
+        let (workspace, new_pane) = Workspace::new(
             std::env::current_dir().unwrap_or_else(|_| "/".into()),
             24,
             80,
@@ -2726,8 +2794,7 @@ mod tests {
         )
         .expect("workspace should spawn");
         app.state.workspaces = vec![workspace];
-        app.terminal_runtimes.insert(terminal.id.clone(), runtime);
-        app.state.terminals.insert(terminal.id.clone(), terminal);
+        app.install_new_pane_runtimes(new_pane);
         app.state.active = Some(0);
         app.state.selected = 0;
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
@@ -2754,7 +2821,7 @@ mod tests {
 
         assert_eq!(app.state.mode, Mode::Terminal);
         assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_count(), 2);
-        assert_eq!(app.terminal_runtimes.len(), runtime_count + 1);
+        assert_eq!(app.terminal_runtimes.len(), runtime_count + 2);
 
         let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
         for (_terminal_id, runtime) in runtimes {

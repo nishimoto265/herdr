@@ -31,6 +31,18 @@ pub(crate) fn resolve_new_terminal_cwd(
 }
 
 impl App {
+    pub(crate) fn install_new_pane_runtimes(&mut self, new_pane: crate::workspace::NewPane) {
+        self.terminal_runtimes
+            .insert(new_pane.terminal.id.clone(), new_pane.runtime);
+        self.terminal_runtimes
+            .insert(new_pane.back_terminal.id.clone(), new_pane.back_runtime);
+        self.state
+            .terminals
+            .insert(new_pane.terminal.id.clone(), new_pane.terminal);
+        self.state
+            .terminals
+            .insert(new_pane.back_terminal.id.clone(), new_pane.back_terminal);
+    }
     pub(super) fn seed_cwd_from_workspace(&self, ws_idx: usize) -> Option<PathBuf> {
         self.state
             .workspaces
@@ -143,7 +155,7 @@ impl App {
         };
         let (rows, cols) = self.state.estimate_pane_size();
         let ws = &mut self.state.workspaces[ws_idx];
-        let (idx, terminal, runtime) = ws.create_tab(
+        let (idx, new_pane) = ws.create_tab(
             rows,
             cols,
             initial_cwd,
@@ -153,8 +165,7 @@ impl App {
             Vec::new(),
         )?;
         let root_pane = ws.tabs[idx].root_pane;
-        self.terminal_runtimes.insert(terminal.id.clone(), runtime);
-        self.state.terminals.insert(terminal.id.clone(), terminal);
+        self.install_new_pane_runtimes(new_pane);
         self.state.remove_alias_shadowed_by_new_pane(root_pane);
         if focus {
             self.state.switch_workspace_tab(ws_idx, idx);
@@ -196,7 +207,7 @@ impl App {
         extra_env: Vec<(String, String)>,
     ) -> std::io::Result<usize> {
         let (rows, cols) = self.state.estimate_pane_size();
-        let (ws, terminal, runtime) = Workspace::new_with_extra_env(
+        let (ws, new_pane) = Workspace::new_with_extra_env(
             initial_cwd,
             rows,
             cols,
@@ -208,8 +219,7 @@ impl App {
             self.render_dirty.clone(),
             extra_env,
         )?;
-        self.terminal_runtimes.insert(terminal.id.clone(), runtime);
-        self.state.terminals.insert(terminal.id.clone(), terminal);
+        self.install_new_pane_runtimes(new_pane);
         self.state.workspaces.push(ws);
         let idx = self.state.workspaces.len() - 1;
         self.state

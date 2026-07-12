@@ -30,11 +30,17 @@ impl App {
         pane_id: crate::layout::PaneId,
     ) -> Option<String> {
         let ws = self.state.workspaces.get(ws_idx)?;
-        let pane_number = ws.public_pane_number(pane_id)?;
-        Some(crate::workspace::public_pane_id_for_number(
-            &ws.id,
-            pane_number,
-        ))
+        let (front_pane_id, backside) = ws
+            .front_pane_for_backside(pane_id)
+            .map(|front| (front, true))
+            .unwrap_or((pane_id, false));
+        let pane_number = ws.public_pane_number(front_pane_id)?;
+        let public_id = crate::workspace::public_pane_id_for_number(&ws.id, pane_number);
+        Some(if backside {
+            format!("{public_id}:back")
+        } else {
+            public_id
+        })
     }
 
     pub(super) fn pane_launch_env(
@@ -47,12 +53,12 @@ impl App {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
         let tab_id = self.public_tab_id(ws_idx, tab_idx)?;
-        let pane_id = self.public_pane_id(ws_idx, pane_id)?;
+        let public_pane_id = self.public_pane_id(ws_idx, pane_id)?;
         Some(
             crate::pane::PaneLaunchEnv::from_extra(extra_env).with_identity(
                 workspace_id,
                 tab_id,
-                pane_id,
+                public_pane_id,
             ),
         )
     }
@@ -106,6 +112,22 @@ impl App {
     pub(super) fn parse_pane_id(&self, id: &str) -> Option<(usize, crate::layout::PaneId)> {
         if let Some(alias) = self.state.public_pane_id_aliases.get(id).copied() {
             return self.find_pane(alias).map(|(ws_idx, _)| (ws_idx, alias));
+        }
+
+        if let Some(front_id) = id.strip_suffix(":back") {
+            let (ws_idx, front_pane_id) = self.parse_pane_id(front_id)?;
+            let back_pane_id = self.state.workspaces[ws_idx]
+                .active_tab()
+                .and_then(|tab| tab.backsides.get(&front_pane_id))
+                .map(|backside| backside.pane_id)
+                .or_else(|| {
+                    self.state.workspaces[ws_idx]
+                        .tabs
+                        .iter()
+                        .find_map(|tab| tab.backsides.get(&front_pane_id))
+                        .map(|backside| backside.pane_id)
+                })?;
+            return Some((ws_idx, back_pane_id));
         }
 
         if let Some(rest) = id.strip_prefix("p_") {

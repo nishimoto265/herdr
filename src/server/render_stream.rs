@@ -371,7 +371,7 @@ pub(crate) fn visible_hyperlinks(
     let mut links = Vec::new();
     for info in &app_state.view.pane_infos {
         if let Some(runtime) =
-            app_state.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
+            app_state.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
         {
             links.extend(runtime.visible_hyperlinks(info.inner_rect));
         }
@@ -396,7 +396,8 @@ pub(crate) fn focused_terminal_cursor(
     if !app_state.pane_exposes_host_cursor(ws_idx, info.id) {
         return None;
     }
-    let rt = app_state.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)?;
+    let rt =
+        app_state.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)?;
     if rt.synchronized_output_active() {
         return None;
     }
@@ -475,7 +476,7 @@ fn focused_terminal_owns_host_cursor(
     }
 
     app_state
-        .runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
+        .displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
         .is_some()
 }
 
@@ -503,6 +504,6 @@ fn focused_terminal_suppresses_host_cursor(
     }
 
     app_state
-        .runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
+        .displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
         .is_some_and(crate::terminal::TerminalRuntime::synchronized_output_active)
 }

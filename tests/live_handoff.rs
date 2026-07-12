@@ -474,7 +474,7 @@ fn wait_for_http_contains(port: u16, needle: &str, timeout: Duration) -> String 
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn live_server_holds_one_pty_master_fd_per_pane() {
+fn live_server_holds_front_and_back_pty_master_fds_per_pane() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -502,7 +502,7 @@ fn live_server_holds_one_pty_master_fd_per_pane() {
         .as_str()
         .unwrap()
         .to_string();
-    wait_for_server_ptmx_fd_count(server_pid, 1, Duration::from_secs(5));
+    wait_for_server_ptmx_fd_count(server_pid, 2, Duration::from_secs(5));
 
     let second = request(
         &api_socket,
@@ -521,7 +521,7 @@ fn live_server_holds_one_pty_master_fd_per_pane() {
         .as_str()
         .unwrap()
         .to_string();
-    wait_for_server_ptmx_fd_count(server_pid, 2, Duration::from_secs(5));
+    wait_for_server_ptmx_fd_count(server_pid, 4, Duration::from_secs(5));
 
     assert_ok(request(
         &api_socket,
@@ -535,7 +535,7 @@ fn live_server_holds_one_pty_master_fd_per_pane() {
             }
         }),
     ));
-    wait_for_server_ptmx_fd_count(server_pid, 3, Duration::from_secs(5));
+    wait_for_server_ptmx_fd_count(server_pid, 6, Duration::from_secs(5));
 
     assert_ok(request(
         &api_socket,
@@ -544,7 +544,7 @@ fn live_server_holds_one_pty_master_fd_per_pane() {
     let replacement_pid =
         wait_for_replacement_server_pid(&runtime_dir, server_pid, Duration::from_secs(10));
     wait_for_api(&api_socket, Duration::from_secs(10));
-    wait_for_server_ptmx_fd_count(replacement_pid, 3, Duration::from_secs(5));
+    wait_for_server_ptmx_fd_count(replacement_pid, 6, Duration::from_secs(5));
 
     let _ = request(
         &api_socket,

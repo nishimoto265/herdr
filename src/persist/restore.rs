@@ -15,7 +15,8 @@ use crate::terminal::{TerminalId, TerminalRuntime, TerminalState};
 use crate::workspace::Workspace;
 
 use super::snapshot::{
-    PaneAgentSessionSnapshot, PaneHistorySnapshot, TabHistorySnapshot, WorkspaceHistorySnapshot,
+    PaneAgentSessionSnapshot, PaneHistorySnapshot, PaneSnapshot, TabHistorySnapshot,
+    WorkspaceHistorySnapshot,
 };
 use super::{
     DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot, TabSnapshot,
@@ -32,6 +33,12 @@ struct PaneRestoreStartup<'a> {
     initial_history_ansi: Option<&'a str>,
     duplicate_agent_session: bool,
     reserved_agent_session: Option<String>,
+}
+
+struct PreparedPaneRestore<'a> {
+    cwd: PathBuf,
+    startup: PaneRestoreStartup<'a>,
+    initial_restore_agent: Option<crate::detect::Agent>,
 }
 
 struct RestoreRuntimeContext<'a> {
@@ -456,50 +463,28 @@ fn restore_tab(
     let pane_ids = collect_pane_ids(&node);
 
     let mut panes = HashMap::new();
+    let mut backsides = HashMap::new();
     let mut terminals = Vec::new();
     let mut terminal_runtimes = HashMap::new();
     let mut failed_imports = 0;
     for id in &pane_ids {
         let old_id = reverse_id_map.get(id);
         let saved_pane = old_id.and_then(|old_id| snap.panes.get(old_id));
-        let saved_cwd = saved_pane
-            .map(|p| p.cwd.clone())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
-
-        let cwd = if saved_cwd.exists() {
-            saved_cwd
-        } else {
-            warn!(
-                cwd = %saved_cwd.display(),
-                "saved pane cwd does not exist, falling back to HOME"
-            );
-            let home = std::env::var("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("/"));
-            if home.exists() {
-                home
-            } else {
-                PathBuf::from("/")
-            }
-        };
-
-        let saved_label = saved_pane.and_then(|p| p.label.clone());
-        let saved_agent_name = saved_pane.and_then(|p| p.agent_name.clone());
-        let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
-        let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
+        let has_saved_launch_argv = saved_pane.is_some_and(|pane| pane.launch_argv.is_some());
         let saved_history =
             old_id.and_then(|old_id| history.and_then(|history| history.panes.get(old_id)));
-        let startup = {
-            let mut agent_restore = AgentRestoreState {
+        let prepared = prepare_pane_restore(
+            saved_pane,
+            std::env::current_dir().unwrap_or_else(|_| "/".into()),
+            saved_history,
+            &mut AgentRestoreState {
                 enabled: runtime_context.resume_agents_on_restore,
                 resumed_sessions: resumed_agent_sessions,
-            };
-            pane_restore_startup(saved_agent_session, saved_history, &mut agent_restore)
-        };
-        let initial_restore_agent = startup
-            .restore_plan
-            .as_ref()
-            .and_then(|plan| crate::detect::parse_agent_label(&plan.agent));
+            },
+        );
+        let cwd = prepared.cwd;
+        let startup = prepared.startup;
+        let initial_restore_agent = prepared.initial_restore_agent;
 
         let old_pane_id = reverse_id_map.get(id).copied();
         let public_pane_id = old_pane_id
@@ -523,31 +508,16 @@ fn restore_tab(
         };
         if let Some(plan) = pending_native_agent_restore {
             let terminal_id = TerminalId::alloc();
-            let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone())
-                .with_pending_agent_resume_plan(plan);
-            if let Some(label) = saved_label {
-                terminal.set_manual_label(label);
-            }
-            if let Some(agent_name) = saved_agent_name {
-                terminal.set_agent_name(agent_name);
-            }
-            if let Some(agent) = initial_restore_agent {
-                let _ = terminal.set_detected_state_with_screen_signals_at(
-                    Some(agent),
-                    AgentState::Idle,
-                    false,
-                    false,
-                    false,
-                    false,
-                    std::time::Instant::now(),
-                );
-            }
-            if let Some(session) = restored_terminal_agent_session(
-                saved_agent_session,
-                startup.duplicate_agent_session,
-            ) {
-                terminal.set_persisted_agent_session(session);
-            }
+            let terminal = build_restored_terminal(
+                terminal_id.clone(),
+                cwd.clone(),
+                saved_pane,
+                &startup,
+                initial_restore_agent,
+                Some(plan),
+                false,
+                false,
+            );
             panes.insert(*id, PaneState::new(terminal_id));
             terminals.push(terminal);
             continue;
@@ -612,35 +582,16 @@ fn restore_tab(
         match runtime_result {
             Ok(runtime) => {
                 let terminal_id = TerminalId::alloc();
-                let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone());
-                if was_imported {
-                    if let Some(argv) = saved_launch_argv {
-                        terminal = terminal.with_launch_argv(argv).with_respawn_shell_on_exit();
-                    }
-                }
-                if let Some(label) = saved_label {
-                    terminal.set_manual_label(label);
-                }
-                if let Some(agent_name) = saved_agent_name {
-                    terminal.set_agent_name(agent_name);
-                }
-                if let Some(agent) = initial_restore_agent {
-                    let _ = terminal.set_detected_state_with_screen_signals_at(
-                        Some(agent),
-                        AgentState::Idle,
-                        false,
-                        false,
-                        false,
-                        false,
-                        std::time::Instant::now(),
-                    );
-                }
-                if let Some(session) = restored_terminal_agent_session(
-                    saved_agent_session,
-                    startup.duplicate_agent_session,
-                ) {
-                    terminal.set_persisted_agent_session(session);
-                }
+                let terminal = build_restored_terminal(
+                    terminal_id.clone(),
+                    cwd.clone(),
+                    saved_pane,
+                    &startup,
+                    initial_restore_agent,
+                    None,
+                    was_imported && has_saved_launch_argv,
+                    was_imported,
+                );
                 panes.insert(*id, PaneState::new(terminal_id.clone()));
                 terminal_runtimes.insert(terminal_id, runtime);
                 terminals.push(terminal);
@@ -666,6 +617,160 @@ fn restore_tab(
                 );
             }
         }
+    }
+
+    let mut failed_pair_fronts = Vec::new();
+    for front_id in panes.keys().copied().collect::<Vec<_>>() {
+        let Some(old_front_id) = reverse_id_map.get(&front_id).copied() else {
+            continue;
+        };
+        let saved_backside = snap.backsides.get(&old_front_id);
+        let saved_pane = saved_backside.map(|backside| &backside.pane);
+        let back_pane_id = PaneId::alloc();
+        let public_pane_id = public_pane_ids_by_old_raw
+            .get(&old_front_id)
+            .cloned()
+            .unwrap_or_else(|| format!("pane-{}", old_front_id));
+        let launch_env = PaneLaunchEnv::from_extra(Vec::new())
+            .with_identity(
+                workspace_id.to_string(),
+                crate::workspace::public_tab_id_for_number(workspace_id, number),
+                public_pane_id,
+            )
+            .for_backside();
+        let saved_history = saved_backside
+            .and_then(|backside| history.and_then(|history| history.panes.get(&backside.pane_id)));
+        let imported_runtime =
+            saved_backside.and_then(|backside| imported_panes.remove(&backside.pane_id));
+        let was_imported = imported_runtime.is_some();
+        let prepared = prepare_pane_restore(
+            saved_pane,
+            snap.panes
+                .get(&old_front_id)
+                .map(|pane| pane.cwd.clone())
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into())),
+            saved_history,
+            &mut AgentRestoreState {
+                enabled: runtime_context.resume_agents_on_restore,
+                resumed_sessions: resumed_agent_sessions,
+            },
+        );
+        let cwd = prepared.cwd;
+        let startup = prepared.startup;
+        let initial_restore_agent = prepared.initial_restore_agent;
+        if !was_imported {
+            if let Some(plan) = startup.restore_plan.clone() {
+                let terminal_id = TerminalId::alloc();
+                let terminal = build_restored_terminal(
+                    terminal_id.clone(),
+                    cwd.clone(),
+                    saved_pane,
+                    &startup,
+                    initial_restore_agent,
+                    Some(plan),
+                    true,
+                    false,
+                );
+                backsides.insert(
+                    front_id,
+                    crate::workspace::PaneBackside {
+                        pane_id: back_pane_id,
+                        pane: PaneState::new(terminal_id),
+                        visible: saved_backside.is_some_and(|backside| backside.visible),
+                    },
+                );
+                terminals.push(terminal);
+                continue;
+            }
+        }
+        let runtime_result = {
+            #[cfg(unix)]
+            if let Some(imported) = imported_runtime {
+                TerminalRuntime::from_handoff_fd(
+                    crate::handoff_runtime::ImportedHandoffRuntime {
+                        master_fd: imported.master_fd,
+                        state: imported.state.with_pane_id(back_pane_id),
+                    },
+                    runtime_context.scrollback_limit_bytes,
+                    crate::terminal_theme::TerminalTheme::default(),
+                    runtime_context.events.clone(),
+                    runtime_context.render_notify.clone(),
+                    runtime_context.render_dirty.clone(),
+                )
+            } else {
+                TerminalRuntime::spawn_with_initial_history(
+                    back_pane_id,
+                    rows,
+                    cols,
+                    cwd.clone(),
+                    runtime_context.scrollback_limit_bytes,
+                    crate::terminal_theme::TerminalTheme::default(),
+                    runtime_context.shell_config,
+                    &launch_env,
+                    startup.initial_history_ansi,
+                    runtime_context.events.clone(),
+                    runtime_context.render_notify.clone(),
+                    runtime_context.render_dirty.clone(),
+                )
+            }
+            #[cfg(not(unix))]
+            TerminalRuntime::spawn_with_initial_history(
+                back_pane_id,
+                rows,
+                cols,
+                cwd.clone(),
+                runtime_context.scrollback_limit_bytes,
+                crate::terminal_theme::TerminalTheme::default(),
+                runtime_context.shell_config,
+                &launch_env,
+                startup.initial_history_ansi,
+                runtime_context.events.clone(),
+                runtime_context.render_notify.clone(),
+                runtime_context.render_dirty.clone(),
+            )
+        };
+        match runtime_result {
+            Ok(runtime) => {
+                let terminal_id = TerminalId::alloc();
+                let terminal = build_restored_terminal(
+                    terminal_id.clone(),
+                    cwd,
+                    saved_pane,
+                    &startup,
+                    initial_restore_agent,
+                    None,
+                    true,
+                    true,
+                );
+                terminal_runtimes.insert(terminal_id.clone(), runtime);
+                backsides.insert(
+                    front_id,
+                    crate::workspace::PaneBackside {
+                        pane_id: back_pane_id,
+                        pane: PaneState::new(terminal_id),
+                        visible: saved_backside.is_some_and(|backside| backside.visible),
+                    },
+                );
+                terminals.push(terminal);
+            }
+            Err(err) => {
+                if let Some(key) = startup.reserved_agent_session.as_deref() {
+                    resumed_agent_sessions.remove(key);
+                }
+                error!(pane_id = front_id.raw(), %err, "failed to restore pane backside");
+                failed_pair_fronts.push(front_id);
+            }
+        }
+    }
+
+    for front_id in failed_pair_fronts {
+        remove_failed_restored_pair(
+            front_id,
+            &mut panes,
+            &mut backsides,
+            &mut terminals,
+            &mut terminal_runtimes,
+        );
     }
 
     if panes.is_empty() {
@@ -702,6 +807,7 @@ fn restore_tab(
                 root_pane,
                 layout,
                 panes,
+                backsides,
                 #[cfg(test)]
                 runtimes: HashMap::new(),
                 zoomed: snap.zoomed,
@@ -715,6 +821,112 @@ fn restore_tab(
         )),
         failed_imports,
     )
+}
+
+fn remove_failed_restored_pair(
+    front_id: PaneId,
+    panes: &mut HashMap<PaneId, PaneState>,
+    backsides: &mut HashMap<PaneId, crate::workspace::PaneBackside>,
+    terminals: &mut Vec<TerminalState>,
+    terminal_runtimes: &mut HashMap<TerminalId, TerminalRuntime>,
+) {
+    if let Some(front_pane) = panes.remove(&front_id) {
+        terminal_runtimes.remove(&front_pane.attached_terminal_id);
+        terminals.retain(|terminal| terminal.id != front_pane.attached_terminal_id);
+    }
+    if let Some(backside) = backsides.remove(&front_id) {
+        terminal_runtimes.remove(&backside.pane.attached_terminal_id);
+        terminals.retain(|terminal| terminal.id != backside.pane.attached_terminal_id);
+    }
+}
+
+fn prepare_pane_restore<'a>(
+    saved_pane: Option<&PaneSnapshot>,
+    fallback_cwd: PathBuf,
+    history: Option<&'a PaneHistorySnapshot>,
+    agent_restore: &mut AgentRestoreState<'_>,
+) -> PreparedPaneRestore<'a> {
+    let saved_cwd = saved_pane
+        .map(|pane| pane.cwd.clone())
+        .unwrap_or(fallback_cwd);
+    let cwd = if saved_cwd.exists() {
+        saved_cwd
+    } else {
+        warn!(
+            cwd = %saved_cwd.display(),
+            "saved pane cwd does not exist, falling back to HOME"
+        );
+        let home = std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/"));
+        if home.exists() {
+            home
+        } else {
+            PathBuf::from("/")
+        }
+    };
+    let startup = pane_restore_startup(
+        saved_pane.and_then(|pane| pane.agent_session.as_ref()),
+        history,
+        agent_restore,
+    );
+    let initial_restore_agent = startup
+        .restore_plan
+        .as_ref()
+        .and_then(|plan| crate::detect::parse_agent_label(&plan.agent));
+    PreparedPaneRestore {
+        cwd,
+        startup,
+        initial_restore_agent,
+    }
+}
+
+fn build_restored_terminal(
+    terminal_id: TerminalId,
+    cwd: PathBuf,
+    saved_pane: Option<&PaneSnapshot>,
+    startup: &PaneRestoreStartup<'_>,
+    initial_restore_agent: Option<crate::detect::Agent>,
+    pending_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
+    respawn_shell_on_exit: bool,
+    restore_launch_argv: bool,
+) -> TerminalState {
+    let mut terminal = TerminalState::new(terminal_id, cwd);
+    if let Some(plan) = pending_resume_plan {
+        terminal = terminal.with_pending_agent_resume_plan(plan);
+    }
+    if respawn_shell_on_exit {
+        terminal = terminal.with_respawn_shell_on_exit();
+    }
+    if restore_launch_argv {
+        if let Some(argv) = saved_pane.and_then(|pane| pane.launch_argv.clone()) {
+            terminal = terminal.with_launch_argv(argv);
+        }
+    }
+    if let Some(label) = saved_pane.and_then(|pane| pane.label.clone()) {
+        terminal.set_manual_label(label);
+    }
+    if let Some(agent_name) = saved_pane.and_then(|pane| pane.agent_name.clone()) {
+        terminal.set_agent_name(agent_name);
+    }
+    if let Some(agent) = initial_restore_agent {
+        let _ = terminal.set_detected_state_with_screen_signals_at(
+            Some(agent),
+            AgentState::Idle,
+            false,
+            false,
+            false,
+            false,
+            std::time::Instant::now(),
+        );
+    }
+    if let Some(session) = restored_terminal_agent_session(
+        saved_pane.and_then(|pane| pane.agent_session.as_ref()),
+        startup.duplicate_agent_session,
+    ) {
+        terminal.set_persisted_agent_session(session);
+    }
+    terminal
 }
 
 fn pane_restore_startup<'a>(
@@ -1149,6 +1361,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn backside_restore_failure_removes_the_entire_pair() {
+        let front_id = PaneId::alloc();
+        let back_id = PaneId::alloc();
+        let front_terminal_id = TerminalId::alloc();
+        let back_terminal_id = TerminalId::alloc();
+        let mut panes = HashMap::from([(front_id, PaneState::new(front_terminal_id.clone()))]);
+        let mut backsides = HashMap::from([(
+            front_id,
+            crate::workspace::PaneBackside {
+                pane_id: back_id,
+                pane: PaneState::new(back_terminal_id.clone()),
+                visible: true,
+            },
+        )]);
+        let cwd = std::env::current_dir().unwrap();
+        let mut terminals = vec![
+            TerminalState::new(front_terminal_id.clone(), cwd.clone()),
+            TerminalState::new(back_terminal_id.clone(), cwd),
+        ];
+        let mut runtimes = HashMap::from([
+            (
+                front_terminal_id.clone(),
+                TerminalRuntime::test_with_screen_bytes(80, 24, b"front"),
+            ),
+            (
+                back_terminal_id.clone(),
+                TerminalRuntime::test_with_screen_bytes(80, 24, b"back"),
+            ),
+        ]);
+
+        remove_failed_restored_pair(
+            front_id,
+            &mut panes,
+            &mut backsides,
+            &mut terminals,
+            &mut runtimes,
+        );
+
+        assert!(!panes.contains_key(&front_id));
+        assert!(!backsides.contains_key(&front_id));
+        assert!(terminals.is_empty());
+        assert!(runtimes.is_empty());
+    }
+
+    #[tokio::test]
     async fn restore_carries_persisted_agent_session_metadata() {
         let cwd = std::env::current_dir().unwrap();
         let snapshot = SessionSnapshot {
@@ -1180,6 +1437,7 @@ mod tests {
                             launch_argv: None,
                         },
                     )]),
+                    backsides: HashMap::new(),
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
@@ -1194,7 +1452,7 @@ mod tests {
         };
         let (events, _event_rx) = mpsc::channel(4);
 
-        let (_workspaces, terminals, _runtimes) = restore(
+        let (workspaces, terminals, _runtimes) = restore(
             &snapshot,
             None,
             24,
@@ -1208,9 +1466,14 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
 
-        let terminal = terminals
+        let front_terminal_id = &workspaces[0].tabs[0]
+            .panes
             .values()
             .next()
+            .expect("restored front pane")
+            .attached_terminal_id;
+        let terminal = terminals
+            .get(front_terminal_id)
             .expect("restored terminal should exist");
         assert!(
             !terminal.respawn_shell_on_exit,
@@ -1269,6 +1532,7 @@ mod tests {
                             },
                         ),
                     ]),
+                    backsides: HashMap::new(),
                     zoomed: false,
                     focused: Some(10),
                     root_pane: Some(10),
@@ -1349,6 +1613,7 @@ mod tests {
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(10),
                         panes: HashMap::from([pane_snap("10")]),
+                        backsides: HashMap::new(),
                         zoomed: false,
                         focused: Some(10),
                         root_pane: Some(10),
@@ -1357,6 +1622,7 @@ mod tests {
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(11),
                         panes: HashMap::from([pane_snap("11")]),
+                        backsides: HashMap::new(),
                         zoomed: false,
                         focused: Some(11),
                         root_pane: Some(11),
@@ -1365,6 +1631,7 @@ mod tests {
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(12),
                         panes: HashMap::from([pane_snap("12")]),
+                        backsides: HashMap::new(),
                         zoomed: false,
                         focused: Some(12),
                         root_pane: Some(12),
@@ -1373,6 +1640,7 @@ mod tests {
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(13),
                         panes: HashMap::from([(13, final_pane)]),
+                        backsides: HashMap::new(),
                         zoomed: false,
                         focused: Some(13),
                         root_pane: Some(13),
@@ -1437,6 +1705,7 @@ mod tests {
                     second: Box::new(LayoutSnapshot::Pane(20)),
                 },
                 panes: HashMap::new(),
+                backsides: HashMap::new(),
                 zoomed: false,
                 focused: Some(10),
                 root_pane: Some(10),
@@ -1485,6 +1754,7 @@ mod tests {
                             launch_argv: None,
                         },
                     )]),
+                    backsides: HashMap::new(),
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
@@ -1499,7 +1769,7 @@ mod tests {
         };
         let (events, _event_rx) = mpsc::channel(4);
 
-        let (_workspaces, terminals, runtimes) = restore(
+        let (workspaces, terminals, runtimes) = restore(
             &snapshot,
             None,
             24,
@@ -1513,9 +1783,14 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
 
-        let terminal = terminals
+        let front_terminal_id = &workspaces[0].tabs[0]
+            .panes
             .values()
             .next()
+            .expect("restored front pane")
+            .attached_terminal_id;
+        let terminal = terminals
+            .get(front_terminal_id)
             .expect("native agent restore should create terminal state");
         assert!(
             terminal.pending_agent_resume_plan.is_some(),
@@ -1526,11 +1801,11 @@ mod tests {
             "deferred agent resume should not use native restore lifecycle before launch"
         );
         assert!(
-            runtimes.is_empty(),
-            "native agent restore should not spawn a fallback-size runtime during snapshot restore"
+            !runtimes.contains_key(front_terminal_id),
+            "native agent restore should not spawn a fallback-size front runtime during snapshot restore"
         );
         let mut imports = HashMap::new();
-        let (_handoff_workspaces, handoff_terminals, handoff_runtimes) = restore_handoff(
+        let (handoff_workspaces, handoff_terminals, handoff_runtimes) = restore_handoff(
             &snapshot,
             0,
             test_restore_shell(),
@@ -1541,17 +1816,22 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         )
         .expect("handoff restore should preserve pending native agent resume");
-        let handoff_terminal = handoff_terminals
+        let handoff_front_terminal_id = &handoff_workspaces[0].tabs[0]
+            .panes
             .values()
             .next()
+            .expect("handoff restored front pane")
+            .attached_terminal_id;
+        let handoff_terminal = handoff_terminals
+            .get(handoff_front_terminal_id)
             .expect("handoff restore should create terminal state");
         assert!(
             handoff_terminal.pending_agent_resume_plan.is_some(),
             "handoff restore should preserve pending native agent resume intent"
         );
         assert!(
-            handoff_runtimes.is_empty(),
-            "handoff restore should not replace pending native agent resume with a shell runtime"
+            !handoff_runtimes.contains_key(handoff_front_terminal_id),
+            "handoff restore should not replace pending native agent resume with a front shell runtime"
         );
     }
 
@@ -1562,7 +1842,7 @@ mod tests {
         let render_notify = Arc::new(Notify::new());
         let render_dirty = Arc::new(AtomicBool::new(false));
 
-        let (_workspaces, _terminals, runtimes) = restore(
+        let (workspaces, _terminals, runtimes) = restore(
             &snapshot,
             Some(&history),
             5,
@@ -1575,9 +1855,14 @@ mod tests {
             render_notify,
             render_dirty,
         );
-        let runtime = runtimes
+        let front_terminal_id = &workspaces[0].tabs[0]
+            .panes
             .values()
             .next()
+            .expect("restored front pane")
+            .attached_terminal_id;
+        let runtime = runtimes
+            .get(front_terminal_id)
             .expect("restored runtime should exist");
 
         assert!(
@@ -1592,6 +1877,135 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
+    }
+
+    #[tokio::test]
+    async fn restore_v4_preserves_distinct_backside_state_history_and_identity() {
+        let cwd = std::env::current_dir().unwrap();
+        let pane_snapshot = |label: &str, session: &str| PaneSnapshot {
+            cwd: cwd.clone(),
+            label: Some(label.into()),
+            agent_name: Some("opencode".into()),
+            agent_session: Some(PaneAgentSessionSnapshot {
+                source: "herdr:opencode".into(),
+                agent: "opencode".into(),
+                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                value: session.into(),
+            }),
+            launch_argv: None,
+        };
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                public_pane_numbers: HashMap::from([(0, 1)]),
+                next_public_pane_number: 2,
+                public_tab_numbers: vec![1],
+                next_public_tab_number: 2,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes: HashMap::from([(0, pane_snapshot("front-label", "front-session"))]),
+                    backsides: HashMap::from([(
+                        0,
+                        super::super::snapshot::BacksideSnapshot {
+                            pane_id: 1,
+                            pane: pane_snapshot("back-label", "back-session"),
+                            visible: true,
+                        },
+                    )]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let history = SessionHistorySnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceHistorySnapshot {
+                tabs: vec![TabHistorySnapshot {
+                    panes: HashMap::from([
+                        (
+                            0,
+                            PaneHistorySnapshot {
+                                ansi: "FRONT_HISTORY\r\n".into(),
+                                lines: 1,
+                            },
+                        ),
+                        (
+                            1,
+                            PaneHistorySnapshot {
+                                ansi: "BACK_HISTORY\r\n".into(),
+                                lines: 1,
+                            },
+                        ),
+                    ]),
+                }],
+            }],
+        };
+        let (events, _events_rx) = mpsc::channel(8);
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            Some(&history),
+            5,
+            40,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let tab = &workspaces[0].tabs[0];
+        let front_id = tab.root_pane;
+        let backside = &tab.backsides[&front_id];
+        assert!(backside.visible);
+        assert_ne!(front_id, backside.pane_id);
+        let front_terminal_id = tab.panes[&front_id].attached_terminal_id.clone();
+        let back_terminal_id = backside.pane.attached_terminal_id.clone();
+        assert_ne!(front_terminal_id, back_terminal_id);
+        assert_eq!(
+            terminals[&front_terminal_id].manual_label.as_deref(),
+            Some("front-label")
+        );
+        assert_eq!(
+            terminals[&back_terminal_id].manual_label.as_deref(),
+            Some("back-label")
+        );
+        assert_eq!(
+            terminals[&front_terminal_id]
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| session.session_ref.value.as_str()),
+            Some("front-session")
+        );
+        assert_eq!(
+            terminals[&back_terminal_id]
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| session.session_ref.value.as_str()),
+            Some("back-session")
+        );
+        assert!(runtimes[&front_terminal_id]
+            .recent_unwrapped_text(10)
+            .contains("FRONT_HISTORY"));
+        assert!(runtimes[&back_terminal_id]
+            .recent_unwrapped_text(10)
+            .contains("BACK_HISTORY"));
+        for runtime in runtimes.values() {
+            let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
+        }
     }
 
     #[tokio::test]
@@ -1675,6 +2089,7 @@ mod tests {
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes,
+                    backsides: HashMap::new(),
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),

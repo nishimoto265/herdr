@@ -47,6 +47,7 @@ impl App {
         let Some((ws_idx, target_pane_id)) = target else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
+        let target_pane_id = self.layout_slot_pane_id(ws_idx, target_pane_id);
         let extra_env = match super::env::normalize_launch_env(params.env) {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
@@ -106,15 +107,12 @@ impl App {
                 .record_pane_focus_change(previous_focus, ws_idx, new_pane.pane_id);
             self.state.settle_terminal_mode_after_focus();
         }
-        self.terminal_runtimes
-            .insert(new_pane.terminal.id.clone(), new_pane.runtime);
+        let new_pane_id = new_pane.pane_id;
         self.state
             .remove_alias_shadowed_by_new_pane(new_pane.pane_id);
-        self.state
-            .terminals
-            .insert(new_pane.terminal.id.clone(), new_pane.terminal);
+        self.install_new_pane_runtimes(new_pane);
         self.schedule_session_save();
-        let pane = self.pane_info(ws_idx, new_pane.pane_id).unwrap();
+        let pane = self.pane_info(ws_idx, new_pane_id).unwrap();
         self.emit_event(EventEnvelope {
             event: EventKind::PaneCreated,
             data: EventData::PaneCreated { pane: pane.clone() },
@@ -161,6 +159,7 @@ impl App {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
+        let pane_id = self.layout_slot_pane_id(ws_idx, pane_id);
         let Some(_tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
@@ -176,7 +175,8 @@ impl App {
     }
 
     pub(super) fn handle_pane_layout(&mut self, id: String, params: PaneLayoutParams) -> String {
-        let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
+        let Some((ws_idx, pane_id)) = self.resolve_optional_layout_pane(params.pane_id.as_deref())
+        else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
         let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
@@ -245,7 +245,8 @@ impl App {
         id: String,
         params: PaneNeighborParams,
     ) -> String {
-        let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
+        let Some((ws_idx, pane_id)) = self.resolve_optional_layout_pane(params.pane_id.as_deref())
+        else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
         let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
@@ -278,7 +279,8 @@ impl App {
     }
 
     pub(super) fn handle_pane_edges(&mut self, id: String, params: PaneEdgesParams) -> String {
-        let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
+        let Some((ws_idx, pane_id)) = self.resolve_optional_layout_pane(params.pane_id.as_deref())
+        else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
         let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
@@ -334,7 +336,8 @@ impl App {
         id: String,
         params: PaneFocusDirectionParams,
     ) -> String {
-        let Some((ws_idx, source_pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref())
+        let Some((ws_idx, source_pane_id)) =
+            self.resolve_optional_layout_pane(params.pane_id.as_deref())
         else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
@@ -387,7 +390,8 @@ impl App {
     }
 
     pub(super) fn handle_pane_resize(&mut self, id: String, params: PaneResizeParams) -> String {
-        let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
+        let Some((ws_idx, pane_id)) = self.resolve_optional_layout_pane(params.pane_id.as_deref())
+        else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
         let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
@@ -492,12 +496,14 @@ impl App {
             let source = self
                 .parse_pane_id(source_raw)
                 .and_then(|(ws_idx, pane_id)| {
+                    let pane_id = self.layout_slot_pane_id(ws_idx, pane_id);
                     let tab_idx = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id)?;
                     Some((ws_idx, tab_idx, pane_id))
                 });
             let target = self
                 .parse_pane_id(target_raw)
                 .and_then(|(ws_idx, pane_id)| {
+                    let pane_id = self.layout_slot_pane_id(ws_idx, pane_id);
                     let tab_idx = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id)?;
                     Some((ws_idx, tab_idx, pane_id))
                 });
@@ -566,6 +572,7 @@ impl App {
             Some(raw) => self
                 .parse_pane_id(&raw)
                 .and_then(|(idx, pane_id)| {
+                    let pane_id = self.layout_slot_pane_id(idx, pane_id);
                     self.state
                         .workspaces
                         .get(idx)?
@@ -581,6 +588,7 @@ impl App {
             Some(raw) => self
                 .parse_pane_id(&raw)
                 .and_then(|(idx, pane_id)| {
+                    let pane_id = self.layout_slot_pane_id(idx, pane_id);
                     self.state
                         .workspaces
                         .get(idx)?
@@ -622,6 +630,7 @@ impl App {
         let Some((source_ws_idx, source_pane_id)) = self.parse_pane_id(&pane_id) else {
             return encode_error(id, "pane_not_found", "source pane not found");
         };
+        let source_pane_id = self.layout_slot_pane_id(source_ws_idx, source_pane_id);
         let Some(source_tab_idx) =
             self.state.workspaces[source_ws_idx].find_tab_index_for_pane(source_pane_id)
         else {
@@ -749,6 +758,7 @@ impl App {
                                 format!("target pane {raw} not found"),
                             );
                         };
+                        let pane_id = self.layout_slot_pane_id(pane_ws_idx, pane_id);
                         let pane_tab_idx =
                             self.state.workspaces[pane_ws_idx].find_tab_index_for_pane(pane_id);
                         if pane_ws_idx != target_ws_idx || pane_tab_idx != Some(target_tab_idx) {
@@ -1084,7 +1094,8 @@ impl App {
     }
 
     pub(super) fn handle_pane_zoom(&mut self, id: String, params: PaneZoomParams) -> String {
-        let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
+        let Some((ws_idx, pane_id)) = self.resolve_optional_layout_pane(params.pane_id.as_deref())
+        else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
         let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
@@ -1469,9 +1480,15 @@ impl App {
         let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
             return Err(pane_not_found(id, &target.pane_id));
         };
+        let slot_pane_id = self.state.workspaces[ws_idx]
+            .front_pane_for_backside(pane_id)
+            .unwrap_or(pane_id);
         let workspace_id = self.public_workspace_id(ws_idx);
-        let layout_update_target = self.layout_update_target_after_pane_removal(ws_idx, pane_id);
-        if self.state.close_pane_would_close_workspace(ws_idx, pane_id)
+        let layout_update_target =
+            self.layout_update_target_after_pane_removal(ws_idx, slot_pane_id);
+        if self
+            .state
+            .close_pane_would_close_workspace(ws_idx, slot_pane_id)
             && self.state.confirm_implicit_worktree_group_close(ws_idx)
         {
             return Err(encode_error(
@@ -1481,14 +1498,14 @@ impl App {
             ));
         }
         let workspace_snapshot = self.workspace_info(ws_idx);
-        let terminal_id = self.state.terminal_id_for_pane(ws_idx, pane_id);
+        let terminal_ids = self.state.terminal_ids_for_pane(ws_idx, slot_pane_id);
         let should_close_workspace = {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return Err(pane_not_found(id, &target.pane_id));
             };
-            ws.close_pane(pane_id)
+            ws.close_pane(slot_pane_id)
         };
-        self.state.remove_plugin_pane_records([pane_id]);
+        self.state.remove_plugin_pane_records([slot_pane_id]);
         if should_close_workspace {
             self.state.selected = ws_idx;
             self.state.close_selected_workspace();
@@ -1508,7 +1525,7 @@ impl App {
                 },
             });
         } else {
-            self.state.remove_unattached_terminal_ids(terminal_id);
+            self.state.remove_unattached_terminal_ids(terminal_ids);
             self.shutdown_detached_terminal_runtimes();
             self.schedule_session_save();
             self.emit_event(EventEnvelope {
@@ -1631,8 +1648,21 @@ impl App {
         }
     }
 
-    fn resolve_swap_source(&self, pane_id: Option<&str>) -> Option<(usize, PaneId)> {
+    fn layout_slot_pane_id(&self, ws_idx: usize, pane_id: PaneId) -> PaneId {
+        self.state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|workspace| workspace.front_pane_for_backside(pane_id))
+            .unwrap_or(pane_id)
+    }
+
+    fn resolve_optional_layout_pane(&self, pane_id: Option<&str>) -> Option<(usize, PaneId)> {
         self.resolve_optional_pane(pane_id)
+            .map(|(ws_idx, pane_id)| (ws_idx, self.layout_slot_pane_id(ws_idx, pane_id)))
+    }
+
+    fn resolve_swap_source(&self, pane_id: Option<&str>) -> Option<(usize, PaneId)> {
+        self.resolve_optional_layout_pane(pane_id)
     }
 
     fn directional_pane_target(
@@ -1642,6 +1672,7 @@ impl App {
         source_pane_id: PaneId,
         direction: PaneDirection,
     ) -> Option<PaneId> {
+        let source_pane_id = self.layout_slot_pane_id(ws_idx, source_pane_id);
         let tab = self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
         let panes = tab.layout.panes(self.state.view.terminal_area);
         let source = panes.iter().find(|pane| pane.id == source_pane_id)?;
@@ -1948,6 +1979,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn front_api_send_target_does_not_change_when_backside_is_visible() {
+        let (mut app, pane_id, mut front_rx) = app_with_send_key_runtime(1);
+        app.state.active = Some(0);
+        assert!(app.state.toggle_focused_backside());
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req".into(),
+            method: crate::api::schema::Method::PaneSendKeys(PaneSendKeysParams {
+                pane_id,
+                keys: vec!["x".into()],
+            }),
+        });
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.result, ResponseResult::Ok {});
+        assert_eq!(front_rx.try_recv().unwrap().as_ref(), b"x");
+    }
+
+    #[tokio::test]
     async fn api_pane_get_exposes_scroll_metrics() {
         let (mut app, public_pane_id, pane_id) = app_with_scrollback_runtime();
         let runtime = app
@@ -2185,6 +2235,46 @@ mod tests {
         assert!(!pane.focused);
         assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(root));
         assert_ne!(pane.pane_id, root_public);
+    }
+
+    #[test]
+    fn backside_public_identity_round_trips_to_its_own_terminal() {
+        let (mut app, front_public_id) = app_with_test_workspace();
+        let front_id = app.state.workspaces[0].tabs[0].root_pane;
+        let backside = &app.state.workspaces[0].tabs[0].backsides[&front_id];
+        let back_id = backside.pane_id;
+        let back_terminal_id = backside.pane.attached_terminal_id.clone();
+        let back_public_id = app.public_pane_id(0, back_id).unwrap();
+
+        assert_eq!(back_public_id, format!("{front_public_id}:back"));
+        assert_eq!(app.parse_pane_id(&back_public_id), Some((0, back_id)));
+
+        let response = app.handle_pane_current(
+            "req".into(),
+            crate::api::schema::PaneCurrentParams {
+                caller_pane_id: Some(back_public_id.clone()),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneCurrent { pane } = success.result else {
+            panic!("expected pane current response");
+        };
+        assert_eq!(pane.pane_id, back_public_id);
+        assert_eq!(pane.terminal_id, back_terminal_id.to_string());
+
+        let response = app.handle_pane_report_metadata(
+            "report".into(),
+            metadata_params(format!("{front_public_id}:back")),
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.id, "report");
+        assert_eq!(
+            app.state.terminals[&back_terminal_id]
+                .effective_presentation()
+                .custom_status
+                .as_deref(),
+            Some("activity")
+        );
     }
 
     #[test]
@@ -3407,6 +3497,49 @@ mod tests {
         assert!(edges.right);
         assert!(edges.up);
         assert!(edges.down);
+    }
+
+    #[test]
+    fn backside_layout_apis_target_the_paired_front_slot() {
+        let mut app = app_with_linked_worktree();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        crate::ui::compute_view(&mut app.state, ratatui::layout::Rect::new(0, 0, 100, 20));
+        let root_public = app.public_pane_id(0, root).unwrap();
+        let root_back = app.state.workspaces[0].tabs[0].backsides[&root].pane_id;
+        let root_back_public = app.public_pane_id(0, root_back).unwrap();
+        let right_public = app.public_pane_id(0, right).unwrap();
+
+        let response = app.handle_pane_neighbor(
+            "neighbor".into(),
+            PaneNeighborParams {
+                pane_id: Some(root_back_public.clone()),
+                direction: PaneDirection::Right,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneNeighbor { neighbor } = success.result else {
+            panic!("expected pane neighbor response");
+        };
+        assert_eq!(neighbor.pane_id, root_public);
+        assert_eq!(neighbor.neighbor_pane_id, Some(right_public));
+
+        let response = app.handle_pane_zoom(
+            "zoom".into(),
+            PaneZoomParams {
+                pane_id: Some(root_back_public),
+                mode: PaneZoomMode::On,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneZoom { zoom } = success.result else {
+            panic!("expected pane zoom response");
+        };
+        assert_eq!(zoom.pane_id, root_public);
+        assert!(zoom.zoomed);
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(root));
     }
 
     #[test]
