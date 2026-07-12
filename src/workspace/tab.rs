@@ -11,17 +11,28 @@ use crate::layout::{Node, PaneId, TileLayout};
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
 
-pub(crate) type DetachedPane = (PaneId, TerminalId);
+pub(crate) struct DetachedPane {
+    pub pane_id: PaneId,
+}
 
 pub(crate) struct MovedPane {
     pub pane_id: PaneId,
     pub pane_state: PaneState,
+    pub backside: Option<PaneBackside>,
 }
 
 pub struct NewPane {
     pub pane_id: PaneId,
     pub terminal: TerminalState,
     pub runtime: TerminalRuntime,
+    pub back_terminal: TerminalState,
+    pub back_runtime: TerminalRuntime,
+}
+
+pub struct PaneBackside {
+    pub pane_id: PaneId,
+    pub pane: PaneState,
+    pub visible: bool,
 }
 
 enum SplitCommand<'a> {
@@ -43,6 +54,9 @@ pub struct Tab {
     pub layout: TileLayout,
     /// Pane viewport state — always present, testable without PTYs.
     pub panes: HashMap<PaneId, PaneState>,
+    /// Independent panes paired with layout panes but omitted from the layout tree.
+    /// This keeps split geometry keyed by the public/front pane while both PTYs stay alive.
+    pub backsides: HashMap<PaneId, PaneBackside>,
     #[cfg(test)]
     pub runtimes: HashMap<PaneId, TerminalRuntime>,
     pub zoomed: bool,
@@ -64,7 +78,7 @@ impl Tab {
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<AtomicBool>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Self, NewPane)> {
         Self::new_with_runtime(
             number,
             initial_cwd,
@@ -93,7 +107,7 @@ impl Tab {
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<AtomicBool>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Self, NewPane)> {
         Self::new_with_runtime(
             number,
             initial_cwd,
@@ -124,7 +138,7 @@ impl Tab {
         render_notify: Arc<Notify>,
         render_dirty: Arc<AtomicBool>,
         argv: Option<&[String]>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Self, NewPane)> {
         let (layout, root_id) = TileLayout::new();
         let runtime = if let Some(argv) = argv {
             TerminalRuntime::spawn_argv_command(
@@ -158,13 +172,39 @@ impl Tab {
 
         let terminal_id = TerminalId::alloc();
         let terminal = match argv {
-            Some(argv) => {
-                TerminalState::new(terminal_id.clone(), initial_cwd).with_launch_argv(argv.to_vec())
-            }
-            None => TerminalState::new(terminal_id.clone(), initial_cwd),
+            Some(argv) => TerminalState::new(terminal_id.clone(), initial_cwd.clone())
+                .with_launch_argv(argv.to_vec()),
+            None => TerminalState::new(terminal_id.clone(), initial_cwd.clone()),
         };
         let mut panes = HashMap::new();
         panes.insert(root_id, PaneState::new(terminal_id));
+
+        let back_pane_id = PaneId::alloc();
+        let back_runtime = TerminalRuntime::spawn(
+            back_pane_id,
+            rows,
+            cols,
+            initial_cwd.clone(),
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            shell_config,
+            &launch_env.for_backside(),
+            events.clone(),
+            render_notify.clone(),
+            render_dirty.clone(),
+        )?;
+        let back_terminal_id = TerminalId::alloc();
+        let back_terminal =
+            TerminalState::new(back_terminal_id.clone(), initial_cwd).with_respawn_shell_on_exit();
+        let mut backsides = HashMap::new();
+        backsides.insert(
+            root_id,
+            PaneBackside {
+                pane_id: back_pane_id,
+                pane: PaneState::new(back_terminal_id),
+                visible: false,
+            },
+        );
 
         Ok((
             Self {
@@ -173,6 +213,7 @@ impl Tab {
                 root_pane: root_id,
                 layout,
                 panes,
+                backsides,
                 #[cfg(test)]
                 runtimes: HashMap::new(),
                 zoomed: false,
@@ -180,8 +221,13 @@ impl Tab {
                 render_notify,
                 render_dirty,
             },
-            terminal,
-            runtime,
+            NewPane {
+                pane_id: root_id,
+                terminal,
+                runtime,
+                back_terminal,
+                back_runtime,
+            },
         ))
     }
 
@@ -403,16 +449,51 @@ impl Tab {
         let terminal_id = TerminalId::alloc();
         let terminal = match launch_argv {
             Some(argv) => {
-                TerminalState::new(terminal_id.clone(), actual_cwd).with_launch_argv(argv)
+                TerminalState::new(terminal_id.clone(), actual_cwd.clone()).with_launch_argv(argv)
             }
-            None => TerminalState::new(terminal_id.clone(), actual_cwd),
+            None => TerminalState::new(terminal_id.clone(), actual_cwd.clone()),
         };
         self.panes.insert(new_id, PaneState::new(terminal_id));
+        let back_pane_id = PaneId::alloc();
+        let back_runtime = match TerminalRuntime::spawn(
+            back_pane_id,
+            rows,
+            cols,
+            actual_cwd.clone(),
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            shell_config,
+            &launch_env.for_backside(),
+            self.events.clone(),
+            self.render_notify.clone(),
+            self.render_dirty.clone(),
+        ) {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                self.panes.remove(&new_id);
+                self.layout.close_focused();
+                self.layout.focus_pane(previous_focus);
+                return Err(err);
+            }
+        };
+        let back_terminal_id = TerminalId::alloc();
+        let back_terminal =
+            TerminalState::new(back_terminal_id.clone(), actual_cwd).with_respawn_shell_on_exit();
+        self.backsides.insert(
+            new_id,
+            PaneBackside {
+                pane_id: back_pane_id,
+                pane: PaneState::new(back_terminal_id),
+                visible: false,
+            },
+        );
         self.zoomed = false;
         Ok(NewPane {
             pane_id: new_id,
             terminal,
             runtime,
+            back_terminal,
+            back_runtime,
         })
     }
 
@@ -441,12 +522,17 @@ impl Tab {
         let mut panes = HashMap::new();
         let pane_id = moved.pane_id;
         panes.insert(pane_id, moved.pane_state);
+        let mut backsides = HashMap::new();
+        if let Some(backside) = moved.backside {
+            backsides.insert(pane_id, backside);
+        }
         Self {
             custom_name,
             number,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),
             panes,
+            backsides,
             #[cfg(test)]
             runtimes: HashMap::new(),
             zoomed: false,
@@ -477,10 +563,12 @@ impl Tab {
         }
 
         let pane_state = self.panes.remove(&pane_id)?;
+        let backside = self.backsides.remove(&pane_id);
         self.zoomed = false;
         Some(MovedPane {
             pane_id,
             pane_state,
+            backside,
         })
     }
 
@@ -498,6 +586,9 @@ impl Tab {
             return Err(moved);
         }
         let pane_id = moved.pane_id;
+        if let Some(backside) = moved.backside {
+            self.backsides.insert(pane_id, backside);
+        }
         self.panes.insert(pane_id, moved.pane_state);
         self.zoomed = false;
         Ok(pane_id)
@@ -519,13 +610,13 @@ impl Tab {
             self.layout.focus_pane(prev_focus);
         }
 
-        let pane = self.panes.remove(&pane_id)?;
-        let terminal_id = pane.attached_terminal_id;
+        self.panes.remove(&pane_id)?;
+        self.backsides.remove(&pane_id);
         self.zoomed = false;
         if let Some(next_root) = next_root {
             self.root_pane = next_root;
         }
-        Some((pane_id, terminal_id))
+        Some(DetachedPane { pane_id })
     }
 
     fn promoted_root_if_needed(&self, closing: PaneId) -> Option<PaneId> {
@@ -536,9 +627,41 @@ impl Tab {
     }
 
     pub fn terminal_id(&self, pane_id: PaneId) -> Option<&TerminalId> {
+        if let Some(pane) = self.panes.get(&pane_id) {
+            return Some(&pane.attached_terminal_id);
+        }
+        self.backsides
+            .values()
+            .find(|backside| backside.pane_id == pane_id)
+            .map(|backside| &backside.pane.attached_terminal_id)
+    }
+
+    pub fn front_terminal_id(&self, pane_id: PaneId) -> Option<&TerminalId> {
         self.panes
             .get(&pane_id)
             .map(|pane| &pane.attached_terminal_id)
+    }
+
+    pub fn displayed_terminal_id(&self, pane_id: PaneId) -> Option<&TerminalId> {
+        self.backsides
+            .get(&pane_id)
+            .filter(|backside| backside.visible)
+            .map(|backside| &backside.pane.attached_terminal_id)
+            .or_else(|| self.front_terminal_id(pane_id))
+    }
+
+    pub fn terminal_ids_for_slot(&self, pane_id: PaneId) -> Option<[&TerminalId; 2]> {
+        let front = self.front_terminal_id(pane_id)?;
+        let back = &self.backsides.get(&pane_id)?.pane.attached_terminal_id;
+        Some([front, back])
+    }
+
+    pub fn toggle_backside(&mut self, pane_id: PaneId) -> bool {
+        let Some(backside) = self.backsides.get_mut(&pane_id) else {
+            return false;
+        };
+        backside.visible = !backside.visible;
+        true
     }
 
     pub fn cwd_for_pane(

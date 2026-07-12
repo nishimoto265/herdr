@@ -87,31 +87,37 @@ impl App {
                 for info in
                     self.pending_agent_resume_pane_infos(ws_idx, tab_idx, tab, terminal_area)
                 {
-                    let Some(pane) = tab.panes.get(&info.id) else {
+                    let Some(front_pane) = tab.panes.get(&info.id) else {
                         continue;
                     };
-                    if self
-                        .terminal_runtimes
-                        .get(&pane.attached_terminal_id)
-                        .is_some()
-                    {
-                        continue;
+                    let back_pane = tab
+                        .backsides
+                        .get(&info.id)
+                        .map(|backside| (backside.pane_id, &backside.pane));
+                    for (pane_id, pane) in std::iter::once((info.id, front_pane)).chain(back_pane) {
+                        if self
+                            .terminal_runtimes
+                            .get(&pane.attached_terminal_id)
+                            .is_some()
+                        {
+                            continue;
+                        }
+                        let Some(terminal) = self.state.terminals.get(&pane.attached_terminal_id)
+                        else {
+                            continue;
+                        };
+                        let Some(plan) = terminal.pending_agent_resume_plan.clone() else {
+                            continue;
+                        };
+                        pending.push(PendingAgentResumeCandidate {
+                            pane_id,
+                            terminal_id: pane.attached_terminal_id.clone(),
+                            cwd: terminal.cwd.clone(),
+                            plan,
+                            rows: info.inner_rect.height,
+                            cols: info.inner_rect.width,
+                        });
                     }
-                    let Some(terminal) = self.state.terminals.get(&pane.attached_terminal_id)
-                    else {
-                        continue;
-                    };
-                    let Some(plan) = terminal.pending_agent_resume_plan.clone() else {
-                        continue;
-                    };
-                    pending.push(PendingAgentResumeCandidate {
-                        pane_id: info.id,
-                        terminal_id: pane.attached_terminal_id.clone(),
-                        cwd: terminal.cwd.clone(),
-                        plan,
-                        rows: info.inner_rect.height,
-                        cols: info.inner_rect.width,
-                    });
                 }
             }
         }
@@ -166,12 +172,19 @@ impl App {
         }
         let Some((pane_id, cwd, plan)) = self.state.workspaces.iter().find_map(|ws| {
             ws.tabs.iter().find_map(|tab| {
-                tab.layout.pane_ids().into_iter().find_map(|pane_id| {
-                    let pane = tab.panes.get(&pane_id)?;
-                    if &pane.attached_terminal_id != terminal_id {
-                        return None;
-                    }
-                    let terminal = self.state.terminals.get(terminal_id)?;
+                tab.layout.pane_ids().into_iter().find_map(|front_pane_id| {
+                    let (pane_id, pane) = tab
+                        .panes
+                        .get(&front_pane_id)
+                        .filter(|pane| &pane.attached_terminal_id == terminal_id)
+                        .map(|pane| (front_pane_id, pane))
+                        .or_else(|| {
+                            tab.backsides.get(&front_pane_id).and_then(|backside| {
+                                (&backside.pane.attached_terminal_id == terminal_id)
+                                    .then_some((backside.pane_id, &backside.pane))
+                            })
+                        })?;
+                    let terminal = self.state.terminals.get(&pane.attached_terminal_id)?;
                     Some((
                         pane_id,
                         terminal.cwd.clone(),

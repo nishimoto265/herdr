@@ -22,7 +22,11 @@ impl App {
         let Some(input) = self.prepare_terminal_key_forward(key) else {
             return;
         };
-        if let Some(runtime) = self.lookup_runtime_sender(input.ws_idx, input.pane_id) {
+        if let Some(runtime) = self.state.displayed_runtime_for_pane_in_workspace(
+            &self.terminal_runtimes,
+            input.ws_idx,
+            input.pane_id,
+        ) {
             let _ = runtime.try_send_bytes(input.bytes);
         }
     }
@@ -97,9 +101,11 @@ impl App {
         let ws_idx = self.state.active?;
         let ws = self.state.workspaces.get(ws_idx)?;
         let pane_id = ws.focused_pane_id()?;
-        let rt =
-            self.state
-                .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)?;
+        let rt = self.state.displayed_runtime_for_pane_in_workspace(
+            &self.terminal_runtimes,
+            ws_idx,
+            pane_id,
+        )?;
 
         // Intercept plain PageUp/PageDown presses for pane scrollback only
         // when the focused pane looks like a shell transcript. Normal-screen
@@ -196,7 +202,11 @@ impl App {
         let Some(input) = self.prepare_terminal_key_forward(key) else {
             return;
         };
-        if let Some(runtime) = self.lookup_runtime_sender(input.ws_idx, input.pane_id) {
+        if let Some(runtime) = self.state.displayed_runtime_for_pane_in_workspace(
+            &self.terminal_runtimes,
+            input.ws_idx,
+            input.pane_id,
+        ) {
             let _ = runtime.send_bytes(input.bytes).await;
         }
     }
@@ -1118,7 +1128,7 @@ mod tests {
             crate::api::EventHub::default(),
         );
         app.state.default_shell = "/usr/bin/true".into();
-        let (workspace, terminal, runtime) = Workspace::new(
+        let (workspace, new_pane) = Workspace::new(
             std::env::current_dir().unwrap_or_else(|_| "/".into()),
             24,
             80,
@@ -1131,8 +1141,7 @@ mod tests {
         )
         .expect("workspace should spawn");
         app.state.workspaces = vec![workspace];
-        app.terminal_runtimes.insert(terminal.id.clone(), runtime);
-        app.state.terminals.insert(terminal.id.clone(), terminal);
+        app.install_new_pane_runtimes(new_pane);
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
@@ -1213,7 +1222,7 @@ mod tests {
 
         let start_metrics = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("initial scroll metrics");
         assert_eq!(start_metrics.offset_from_bottom, 0);
@@ -1222,7 +1231,7 @@ mod tests {
 
         let end_metrics = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("scroll metrics after PageUp");
         assert_eq!(
@@ -1257,7 +1266,7 @@ mod tests {
         app.handle_terminal_key_headless(TerminalKey::new(KeyCode::PageUp, KeyModifiers::empty()));
         let after_up = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("scroll metrics after PageUp");
         assert!(after_up.offset_from_bottom > 0);
@@ -1268,7 +1277,7 @@ mod tests {
         ));
         let after_down = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("scroll metrics after PageDown");
         assert_eq!(after_down.offset_from_bottom, 0);
@@ -1300,7 +1309,7 @@ mod tests {
         app.handle_terminal_key_headless(TerminalKey::new(KeyCode::PageUp, KeyModifiers::empty()));
         let after_press = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("scroll metrics after PageUp press");
         assert_eq!(
@@ -1315,7 +1324,7 @@ mod tests {
 
         let after_release = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("scroll metrics after PageUp release");
         assert_eq!(
@@ -1351,7 +1360,7 @@ mod tests {
 
         let metrics = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("scroll metrics after modified PageUp");
         assert_eq!(metrics.offset_from_bottom, 0);
@@ -1384,7 +1393,7 @@ mod tests {
 
         let start_metrics = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("initial scroll metrics");
         assert_eq!(start_metrics.offset_from_bottom, 0);
@@ -1393,7 +1402,7 @@ mod tests {
 
         let end_metrics = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("scroll metrics after PageUp");
         // Forwarded to pane, so test runtime doesn't process it — scroll stays at bottom.
@@ -1427,7 +1436,7 @@ mod tests {
 
         let start_metrics = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("initial scroll metrics");
         assert_eq!(start_metrics.offset_from_bottom, 0);
@@ -1438,9 +1447,40 @@ mod tests {
         assert_eq!(forwarded.as_ref(), b"\x1b[5~");
         let end_metrics = app
             .state
-            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("scroll metrics after PageUp");
         assert_eq!(end_metrics.offset_from_bottom, 0);
+    }
+
+    #[tokio::test]
+    async fn keyboard_input_targets_only_the_visible_backside() {
+        let mut app = app_for_mouse_test();
+        let ws = Workspace::test_new("routing");
+        let front_id = ws.tabs[0].root_pane;
+        let front_terminal = ws.tabs[0].panes[&front_id].attached_terminal_id.clone();
+        let back_terminal = ws.tabs[0].backsides[&front_id]
+            .pane
+            .attached_terminal_id
+            .clone();
+        let (front_runtime, mut front_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        let (back_runtime, mut back_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        app.terminal_runtimes.insert(front_terminal, front_runtime);
+        app.terminal_runtimes.insert(back_terminal, back_runtime);
+        assert!(app.state.toggle_focused_backside());
+
+        app.handle_terminal_key_headless(TerminalKey::new(
+            KeyCode::Char('x'),
+            KeyModifiers::empty(),
+        ));
+
+        assert_eq!(back_rx.try_recv().unwrap().as_ref(), b"x");
+        assert!(front_rx.try_recv().is_err());
     }
 }

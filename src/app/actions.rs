@@ -250,6 +250,25 @@ pub struct PaneStateUpdate {
 // ---------------------------------------------------------------------------
 
 impl AppState {
+    pub(crate) fn toggle_focused_backside(&mut self) -> bool {
+        let Some(ws_idx) = self.active else {
+            return false;
+        };
+        let Some(pane_id) = self
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.focused_pane_id())
+        else {
+            return false;
+        };
+        let changed = self.workspaces[ws_idx].toggle_backside(pane_id);
+        if changed {
+            self.clear_selection();
+            self.copy_mode = None;
+            self.mark_session_dirty();
+        }
+        changed
+    }
     pub(crate) fn current_pane_focus_target(&self) -> Option<PaneFocusTarget> {
         let ws_idx = self.active?;
         let ws = self.workspaces.get(ws_idx)?;
@@ -1366,8 +1385,16 @@ impl AppState {
             .get(ws_idx)
             .into_iter()
             .flat_map(|ws| &ws.tabs)
-            .flat_map(|tab| tab.panes.values())
-            .map(|pane| pane.attached_terminal_id.clone())
+            .flat_map(|tab| {
+                tab.panes
+                    .values()
+                    .map(|pane| pane.attached_terminal_id.clone())
+                    .chain(
+                        tab.backsides
+                            .values()
+                            .map(|backside| backside.pane.attached_terminal_id.clone()),
+                    )
+            })
             .collect()
     }
 
@@ -1389,8 +1416,16 @@ impl AppState {
             .get(ws_idx)
             .and_then(|ws| ws.tabs.get(tab_idx))
             .into_iter()
-            .flat_map(|tab| tab.panes.values())
-            .map(|pane| pane.attached_terminal_id.clone())
+            .flat_map(|tab| {
+                tab.panes
+                    .values()
+                    .map(|pane| pane.attached_terminal_id.clone())
+                    .chain(
+                        tab.backsides
+                            .values()
+                            .map(|backside| backside.pane.attached_terminal_id.clone()),
+                    )
+            })
             .collect()
     }
 
@@ -1402,6 +1437,7 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
     pub(crate) fn terminal_id_for_pane(
         &self,
         ws_idx: usize,
@@ -1411,6 +1447,29 @@ impl AppState {
             .get(ws_idx)?
             .pane_state(pane_id)
             .map(|pane| pane.attached_terminal_id.clone())
+    }
+
+    pub(crate) fn terminal_ids_for_pane(
+        &self,
+        ws_idx: usize,
+        pane_id: PaneId,
+    ) -> Vec<crate::terminal::TerminalId> {
+        let Some(ws) = self.workspaces.get(ws_idx) else {
+            return Vec::new();
+        };
+        let pane_id = ws.front_pane_for_backside(pane_id).unwrap_or(pane_id);
+        let Some(tab) = ws.tabs.iter().find(|tab| tab.panes.contains_key(&pane_id)) else {
+            return Vec::new();
+        };
+        let mut ids = tab
+            .panes
+            .get(&pane_id)
+            .map(|pane| vec![pane.attached_terminal_id.clone()])
+            .unwrap_or_default();
+        if let Some(backside) = tab.backsides.get(&pane_id) {
+            ids.push(backside.pane.attached_terminal_id.clone());
+        }
+        ids
     }
 
     pub(crate) fn remove_unattached_terminal_ids(
@@ -1423,6 +1482,10 @@ impl AppState {
                     tab.panes
                         .values()
                         .any(|pane| pane.attached_terminal_id == terminal_id)
+                        || tab
+                            .backsides
+                            .values()
+                            .any(|backside| backside.pane.attached_terminal_id == terminal_id)
                 })
             });
             if !still_attached
@@ -1826,9 +1889,8 @@ impl AppState {
                     .get(i)
                     .and_then(|ws| ws.focused_pane_id().map(|pane_id| (i, pane_id)))
             })
-            .and_then(|(i, pane_id)| self.terminal_id_for_pane(i, pane_id))
-            .into_iter()
-            .collect::<Vec<_>>();
+            .map(|(i, pane_id)| self.terminal_ids_for_pane(i, pane_id))
+            .unwrap_or_default();
         let pane_ids = active
             .and_then(|i| self.workspaces.get(i).and_then(|ws| ws.focused_pane_id()))
             .into_iter()
@@ -1943,7 +2005,8 @@ impl AppState {
         }
 
         // Leave mouse input to terminal apps that requested it.
-        let Some(rt) = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
+        let Some(rt) =
+            self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
         else {
             return false;
         };
@@ -2005,7 +2068,8 @@ impl AppState {
             return None;
         }
 
-        let rt = self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)?;
+        let rt =
+            self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)?;
         let screen_col = info.inner_rect.x.saturating_add(col);
         let screen_row = info.inner_rect.y.saturating_add(viewport_row);
         if let Some((_, _, uri)) = rt
@@ -2051,7 +2115,7 @@ impl AppState {
         };
 
         let text = self
-            .runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, sel.pane_id)
+            .displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, sel.pane_id)
             .and_then(|rt| rt.extract_selection(&sel));
         if let Some(text) = text {
             if !text.is_empty() {
@@ -3006,6 +3070,9 @@ impl AppState {
             warn!(pane = pane_id.raw(), "PaneDied for unknown pane");
             return;
         };
+        let slot_pane_id = self.workspaces[ws_idx]
+            .front_pane_for_backside(pane_id)
+            .unwrap_or(pane_id);
 
         if self
             .selection
@@ -3016,14 +3083,14 @@ impl AppState {
             self.selection_autoscroll = None;
         }
 
-        let pane_terminal_id = self.terminal_id_for_pane(ws_idx, pane_id);
+        let pane_terminal_ids = self.terminal_ids_for_pane(ws_idx, slot_pane_id);
         let workspace_terminal_ids = self.terminal_ids_for_workspace(ws_idx);
         self.pane_id_aliases.retain(|_, alias| *alias != pane_id);
         self.public_pane_id_aliases
             .retain(|_, alias| *alias != pane_id);
         let should_close_workspace = {
             let ws = &mut self.workspaces[ws_idx];
-            ws.remove_pane(pane_id)
+            ws.remove_pane(slot_pane_id)
         };
         self.mark_session_dirty();
 
@@ -3047,7 +3114,7 @@ impl AppState {
                 }
             }
         } else {
-            self.remove_unattached_terminal_ids(pane_terminal_id);
+            self.remove_unattached_terminal_ids(pane_terminal_ids);
         }
     }
 }
@@ -5371,5 +5438,75 @@ mod tests {
         assert!(!deferred);
         assert_eq!(state.workspaces.len(), 1);
         assert_eq!(state.workspaces[0].display_name(), "notes");
+    }
+
+    #[test]
+    fn backside_detection_updates_its_terminal_without_user_notifications() {
+        let mut state = app_with_workspaces(&["backside"]);
+        let front_id = state.workspaces[0].tabs[0].root_pane;
+        let back = &state.workspaces[0].tabs[0].backsides[&front_id];
+        let back_id = back.pane_id;
+        let back_terminal_id = back.pane.attached_terminal_id.clone();
+
+        let updates = state.handle_app_event(AppEvent::StateChanged {
+            pane_id: back_id,
+            agent: Some(Agent::Codex),
+            state: AgentState::Blocked,
+            visible_blocker: true,
+            visible_working: false,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
+        });
+
+        assert!(updates.is_empty());
+        assert!(state.pending_agent_notifications.is_empty());
+        assert!(state.toast.is_none());
+        assert_eq!(
+            state.terminals[&back_terminal_id].state,
+            AgentState::Blocked
+        );
+        assert_ne!(
+            state.workspaces[0].aggregate_state(&state.terminals).0,
+            AgentState::Blocked
+        );
+    }
+
+    #[test]
+    fn pane_close_reclaims_front_and_back_terminal_state() {
+        let mut state = app_with_workspaces(&["cleanup"]);
+        let closing = state.workspaces[0].test_split(Direction::Horizontal);
+        state.ensure_test_terminals();
+        state.workspaces[0].tabs[0].layout.focus_pane(closing);
+        let terminal_ids = state.terminal_ids_for_pane(0, closing);
+
+        assert!(!state.close_pane());
+        for terminal_id in terminal_ids {
+            assert!(!state.terminals.contains_key(&terminal_id));
+            assert!(state.terminal_runtime_shutdowns.contains(&terminal_id));
+        }
+    }
+
+    #[test]
+    fn tab_and_workspace_close_reclaim_backside_terminal_state() {
+        let mut state = app_with_workspaces(&["kept", "closing"]);
+        state.workspaces[0].test_add_tab(Some("closing-tab"));
+        state.ensure_test_terminals();
+        state.active = Some(0);
+        state.workspaces[0].active_tab = 1;
+        let tab_ids = state.terminal_ids_for_tab(0, 1);
+        assert!(!state.close_tab());
+        for terminal_id in tab_ids {
+            assert!(!state.terminals.contains_key(&terminal_id));
+            assert!(state.terminal_runtime_shutdowns.contains(&terminal_id));
+        }
+
+        state.active = Some(1);
+        state.selected = 1;
+        let workspace_ids = state.terminal_ids_for_workspace(1);
+        assert!(!state.close_pane());
+        for terminal_id in workspace_ids {
+            assert!(!state.terminals.contains_key(&terminal_id));
+            assert!(state.terminal_runtime_shutdowns.contains(&terminal_id));
+        }
     }
 }

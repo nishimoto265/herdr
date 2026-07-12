@@ -322,7 +322,7 @@ impl App {
         extra_env: Vec<(String, String)>,
         focus: bool,
     ) -> Result<(usize, usize, crate::layout::PaneId), AgentStartError> {
-        let (ws, terminal, runtime) = crate::workspace::Workspace::new_argv_command_with_extra_env(
+        let (ws, new_pane) = crate::workspace::Workspace::new_argv_command_with_extra_env(
             cwd,
             rows,
             cols,
@@ -335,8 +335,7 @@ impl App {
             extra_env,
         )
         .map_err(|err| AgentStartError::SpawnFailed(err.to_string()))?;
-        self.terminal_runtimes.insert(terminal.id.clone(), runtime);
-        self.state.terminals.insert(terminal.id.clone(), terminal);
+        self.install_new_pane_runtimes(new_pane);
         self.state.workspaces.push(ws);
         let ws_idx = self.state.workspaces.len() - 1;
         self.state
@@ -388,21 +387,18 @@ impl App {
                 target: target_pane.raw().to_string(),
             })?
             .map_err(|err| AgentStartError::SpawnFailed(err.to_string()))?;
-        self.terminal_runtimes
-            .insert(result.1.terminal.id.clone(), result.1.runtime);
-        self.state
-            .remove_alias_shadowed_by_new_pane(result.1.pane_id);
-        self.state
-            .terminals
-            .insert(result.1.terminal.id.clone(), result.1.terminal);
+        let tab_idx = result.0;
+        let pane_id = result.1.pane_id;
+        self.state.remove_alias_shadowed_by_new_pane(pane_id);
+        self.install_new_pane_runtimes(result.1);
         if focus {
-            self.state.switch_workspace_tab(ws_idx, result.0);
+            self.state.switch_workspace_tab(ws_idx, tab_idx);
             self.state
-                .record_pane_focus_change(previous_focus, ws_idx, result.1.pane_id);
+                .record_pane_focus_change(previous_focus, ws_idx, pane_id);
             self.state.mode = Mode::Terminal;
         }
         self.schedule_session_save();
-        Ok((ws_idx, result.0, result.1.pane_id))
+        Ok((ws_idx, tab_idx, pane_id))
     }
 
     fn agent_info(

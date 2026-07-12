@@ -811,6 +811,10 @@ mod tests {
         let mut one_tab_workspace = Workspace::test_new("one");
         let one_tab_pane = one_tab_workspace.tabs[0].root_pane;
         let one_tab_runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b"");
+        let one_tab_back_terminal = one_tab_workspace.tabs[0].backsides[&one_tab_pane]
+            .pane
+            .attached_terminal_id
+            .clone();
         one_tab_workspace.tabs[0]
             .runtimes
             .insert(one_tab_pane, one_tab_runtime);
@@ -819,6 +823,10 @@ mod tests {
         let background_tab = two_tab_workspace.test_add_tab(Some("logs"));
         let two_tab_pane = two_tab_workspace.tabs[background_tab].root_pane;
         let two_tab_runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b"");
+        let two_tab_back_terminal = two_tab_workspace.tabs[background_tab].backsides[&two_tab_pane]
+            .pane
+            .attached_terminal_id
+            .clone();
         two_tab_workspace.tabs[background_tab]
             .runtimes
             .insert(two_tab_pane, two_tab_runtime);
@@ -828,13 +836,36 @@ mod tests {
         app.selected = 0;
         app.mode = Mode::Terminal;
 
-        compute_view(&mut app, Rect::new(0, 0, 80, 20));
+        let mut terminal_runtimes = TerminalRuntimeRegistry::new();
+        terminal_runtimes.insert(
+            one_tab_back_terminal.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b""),
+        );
+        terminal_runtimes.insert(
+            two_tab_back_terminal.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b""),
+        );
+        compute_view_with_runtime_registry(&mut app, &terminal_runtimes, Rect::new(0, 0, 80, 20));
 
         let one_tab_size = app.workspaces[0].tabs[0].runtimes[&one_tab_pane].current_size();
         let two_tab_size =
             app.workspaces[1].tabs[background_tab].runtimes[&two_tab_pane].current_size();
         assert_eq!(one_tab_size, (20, 53));
         assert_eq!(two_tab_size, (19, 53));
+        assert_eq!(
+            terminal_runtimes
+                .get(&one_tab_back_terminal)
+                .unwrap()
+                .current_size(),
+            one_tab_size
+        );
+        assert_eq!(
+            terminal_runtimes
+                .get(&two_tab_back_terminal)
+                .unwrap()
+                .current_size(),
+            two_tab_size
+        );
     }
 
     #[tokio::test]

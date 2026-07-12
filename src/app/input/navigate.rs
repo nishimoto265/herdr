@@ -51,6 +51,41 @@ pub(crate) enum ActionContext {
 }
 
 impl App {
+    fn toggle_focused_backside(&mut self) -> bool {
+        let Some(ws_idx) = self.state.active else {
+            return false;
+        };
+        let Some(pane_id) = self.state.workspaces[ws_idx].focused_pane_id() else {
+            return false;
+        };
+        let Some([front_terminal_id, back_terminal_id]) = self.state.workspaces[ws_idx]
+            .terminal_ids_for_slot(pane_id)
+            .map(|ids| [ids[0].clone(), ids[1].clone()])
+        else {
+            return false;
+        };
+        let back_was_visible = self.state.workspaces[ws_idx]
+            .active_tab()
+            .and_then(|tab| tab.backsides.get(&pane_id))
+            .is_some_and(|backside| backside.visible);
+        if !self.state.toggle_focused_backside() {
+            return false;
+        }
+        let (lost, gained) = if back_was_visible {
+            (back_terminal_id, front_terminal_id)
+        } else {
+            (front_terminal_id, back_terminal_id)
+        };
+        if let Some(runtime) = self.terminal_runtimes.get(&lost) {
+            runtime.try_send_focus_event(crate::ghostty::FocusEvent::Lost);
+        }
+        if let Some(runtime) = self.terminal_runtimes.get(&gained) {
+            runtime.try_send_focus_event(crate::ghostty::FocusEvent::Gained);
+        }
+        self.schedule_session_save();
+        true
+    }
+
     fn cancel_copy_mode_if_active(&mut self) {
         if self.state.copy_mode.is_some() {
             self.state.cancel_copy_mode(&self.terminal_runtimes);
@@ -374,6 +409,10 @@ impl App {
                 if !self.close_focused_pane_via_api_requires_confirmation() {
                     leave_navigate_mode(&mut self.state);
                 }
+            }
+            NavigateAction::ToggleBackside => {
+                self.toggle_focused_backside();
+                leave_navigate_mode(&mut self.state);
             }
             NavigateAction::EditScrollback => {}
             NavigateAction::CopyMode => self.state.enter_copy_mode(&self.terminal_runtimes),
@@ -892,7 +931,7 @@ impl App {
             .ok_or_else(|| std::io::Error::other("no focused pane"))?;
         let scrollback = self
             .state
-            .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
+            .displayed_runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
             .ok_or_else(|| std::io::Error::other("focused pane has no scrollback runtime"))?
             .recent_text(usize::MAX);
 
@@ -913,12 +952,9 @@ impl App {
                 return Err(err);
             }
         };
-        let terminal_id = new_pane.terminal.id.clone();
-        self.terminal_runtimes
-            .insert(terminal_id.clone(), new_pane.runtime);
         self.state
             .remove_alias_shadowed_by_new_pane(new_pane.pane_id);
-        self.state.terminals.insert(terminal_id, new_pane.terminal);
+        self.install_new_pane_runtimes(new_pane);
 
         if let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) {
             self.state.toast = Some(crate::app::state::ToastNotification {
@@ -974,18 +1010,21 @@ impl App {
             self.state.host_terminal_theme,
         )?;
         let new_pane_id = new_pane.pane_id;
-        self.terminal_runtimes
-            .insert(new_pane.terminal.id.clone(), new_pane.runtime);
-        self.state
-            .terminals
-            .insert(new_pane.terminal.id.clone(), new_pane.terminal);
+        let workspace_id = ws.id.clone();
+        let _ = ws;
+        self.install_new_pane_runtimes(new_pane);
         let new_focus_target = crate::app::state::PaneFocusTarget {
-            workspace_id: ws.id.clone(),
+            workspace_id,
             pane_id: new_pane_id,
         };
         if previous_focus_target.as_ref() != Some(&new_focus_target) {
             self.state.previous_pane_focus = previous_focus_target;
         }
+        let ws = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .ok_or_else(|| std::io::Error::other("active workspace disappeared"))?;
         ws.active_tab_mut()
             .expect("workspace must have an active tab")
             .layout
@@ -1308,6 +1347,7 @@ pub(crate) enum NavigateAction {
     SplitVertical,
     SplitHorizontal,
     ClosePane,
+    ToggleBackside,
     EditScrollback,
     CopyMode,
     Zoom,
@@ -1446,6 +1486,7 @@ fn non_indexed_action_for_key(
         (&kb.split_vertical, NavigateAction::SplitVertical),
         (&kb.split_horizontal, NavigateAction::SplitHorizontal),
         (&kb.close_pane, NavigateAction::ClosePane),
+        (&kb.toggle_backside, NavigateAction::ToggleBackside),
         (&kb.zoom, NavigateAction::Zoom),
         (&kb.resize_mode, NavigateAction::EnterResizeMode),
         (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
@@ -1671,6 +1712,10 @@ pub(super) fn execute_navigate_action_in_context(
             if !state.close_pane() {
                 leave_navigate_mode(state);
             }
+        }
+        NavigateAction::ToggleBackside => {
+            state.toggle_focused_backside();
+            leave_navigate_mode(state);
         }
         NavigateAction::EditScrollback => {}
         NavigateAction::CopyMode => state.enter_copy_mode(terminal_runtimes),
@@ -2987,7 +3032,7 @@ navigate_pane_down = "ctrl+j"
             api_rx,
             crate::api::EventHub::default(),
         );
-        let (workspace, terminal, runtime) = Workspace::new(
+        let (workspace, new_pane) = Workspace::new(
             std::env::current_dir().unwrap_or_else(|_| "/".into()),
             24,
             80,
@@ -3001,8 +3046,7 @@ navigate_pane_down = "ctrl+j"
         .expect("workspace should spawn");
         let root_pane = workspace.tabs[0].root_pane;
         app.state.workspaces = vec![workspace];
-        app.terminal_runtimes.insert(terminal.id.clone(), runtime);
-        app.state.terminals.insert(terminal.id.clone(), terminal);
+        app.install_new_pane_runtimes(new_pane);
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
@@ -3026,7 +3070,7 @@ navigate_pane_down = "ctrl+j"
             .await;
 
         assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_count(), 2);
-        assert_eq!(app.terminal_runtimes.len(), 2);
+        assert_eq!(app.terminal_runtimes.len(), 4);
         assert!(app.state.workspaces[0].tabs[0].zoomed);
         let overlay_pane = app.state.workspaces[0].focused_pane_id().unwrap();
         assert_ne!(overlay_pane, root_pane);
@@ -3208,5 +3252,30 @@ navigate_pane_down = "ctrl+j"
 
         assert!(state.detach_requested);
         assert!(!state.should_quit);
+    }
+
+    #[tokio::test]
+    async fn flipping_pane_sends_focus_lost_then_gained() {
+        let mut app = app_with_test_workspaces(&["focus"]);
+        let front_id = app.state.workspaces[0].tabs[0].root_pane;
+        let front_terminal = app.state.workspaces[0].tabs[0].panes[&front_id]
+            .attached_terminal_id
+            .clone();
+        let back_terminal = app.state.workspaces[0].tabs[0].backsides[&front_id]
+            .pane
+            .attached_terminal_id
+            .clone();
+        let (front_runtime, mut front_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        let (back_runtime, mut back_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        front_runtime.test_process_pty_bytes(b"\x1b[?1004h");
+        back_runtime.test_process_pty_bytes(b"\x1b[?1004h");
+        app.terminal_runtimes.insert(front_terminal, front_runtime);
+        app.terminal_runtimes.insert(back_terminal, back_runtime);
+
+        assert!(app.toggle_focused_backside());
+        assert_eq!(front_rx.try_recv().unwrap().as_ref(), b"\x1b[O");
+        assert_eq!(back_rx.try_recv().unwrap().as_ref(), b"\x1b[I");
     }
 }

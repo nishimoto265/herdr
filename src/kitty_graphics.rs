@@ -240,7 +240,8 @@ pub(crate) fn has_visible_pane_graphics(
     }
 
     for info in &app.view.pane_infos {
-        let Some(runtime) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
+        let Some(runtime) =
+            app.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
         else {
             continue;
         };
@@ -505,7 +506,11 @@ fn collect_visible_placements(
     );
     let mut placements = Vec::new();
     for info in &app.view.pane_infos {
-        let runtime = match app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
+        let runtime = match app.displayed_runtime_for_pane_in_workspace(
+            terminal_runtimes,
+            ws_idx,
+            info.id,
+        ) {
             Some(rt) => rt,
             None => {
                 tracing::debug!(pane_id = ?info.id, "collect_visible_placements: runtime not found");

@@ -914,6 +914,12 @@ impl HeadlessServer {
                 for (pane_id, pane) in &tab.panes {
                     pane_by_terminal.insert(pane.attached_terminal_id.clone(), pane_id.raw());
                 }
+                for backside in tab.backsides.values() {
+                    pane_by_terminal.insert(
+                        backside.pane.attached_terminal_id.clone(),
+                        backside.pane_id.raw(),
+                    );
+                }
             }
         }
         if pane_by_terminal.len() > crate::server::handoff::MAX_FDS_PER_HANDOFF {

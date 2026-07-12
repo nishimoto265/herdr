@@ -12,7 +12,9 @@ use crate::layout::PaneId;
 #[cfg(test)]
 use crate::layout::TileLayout;
 use crate::pane::{PaneLaunchEnv, PaneState};
-use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
+#[cfg(test)]
+use crate::terminal::TerminalRuntime;
+use crate::terminal::{TerminalId, TerminalRuntimeRegistry, TerminalState};
 
 mod aggregate;
 mod git;
@@ -20,7 +22,7 @@ mod tab;
 
 #[cfg(test)]
 use self::git::git_ahead_behind;
-pub(crate) use self::tab::MovedPane;
+pub(crate) use self::tab::{MovedPane, PaneBackside};
 pub use self::{
     git::{
         derive_label_from_cwd, git_branch, git_space_metadata, git_status_cache_key,
@@ -239,7 +241,7 @@ impl Workspace {
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<AtomicBool>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Self, crate::workspace::tab::NewPane)> {
         Self::new_with_extra_env(
             initial_cwd,
             rows,
@@ -266,7 +268,7 @@ impl Workspace {
         render_notify: Arc<Notify>,
         render_dirty: Arc<AtomicBool>,
         extra_env: Vec<(String, String)>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Self, crate::workspace::tab::NewPane)> {
         Self::new_with_tab(
             initial_cwd,
             rows,
@@ -294,7 +296,7 @@ impl Workspace {
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<AtomicBool>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Self, crate::workspace::tab::NewPane)> {
         Self::new_argv_command_with_extra_env(
             initial_cwd,
             rows,
@@ -321,7 +323,7 @@ impl Workspace {
         render_notify: Arc<Notify>,
         render_dirty: Arc<AtomicBool>,
         extra_env: Vec<(String, String)>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Self, crate::workspace::tab::NewPane)> {
         Self::new_with_tab(
             initial_cwd,
             rows,
@@ -350,14 +352,14 @@ impl Workspace {
         render_dirty: Arc<AtomicBool>,
         argv: Option<&[String]>,
         extra_env: Vec<(String, String)>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Self, crate::workspace::tab::NewPane)> {
         let id = generate_workspace_id();
         let launch_env = PaneLaunchEnv::from_extra(extra_env).with_identity(
             id.clone(),
             public_tab_id_for_number(&id, 1),
             public_pane_id_for_number(&id, 1),
         );
-        let (tab, terminal, runtime) = if let Some(argv) = argv {
+        let (tab, root_pane) = if let Some(argv) = argv {
             Tab::new_argv_command(
                 1,
                 initial_cwd.clone(),
@@ -405,8 +407,7 @@ impl Workspace {
                 #[cfg(test)]
                 test_runtimes: HashMap::new(),
             },
-            terminal,
-            runtime,
+            root_pane,
         ))
     }
 
@@ -455,7 +456,7 @@ impl Workspace {
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         shell_config: crate::pane::PaneShellConfig<'_>,
         extra_env: Vec<(String, String)>,
-    ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(usize, crate::workspace::tab::NewPane)> {
         self.create_tab_with_runtime(
             rows,
             cols,
@@ -477,7 +478,7 @@ impl Workspace {
         extra_env: Vec<(String, String)>,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
-    ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(usize, crate::workspace::tab::NewPane)> {
         self.create_tab_with_runtime(
             rows,
             cols,
@@ -500,7 +501,7 @@ impl Workspace {
         shell_config: crate::pane::PaneShellConfig<'_>,
         argv: Option<&[String]>,
         extra_env: Vec<(String, String)>,
-    ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(usize, crate::workspace::tab::NewPane)> {
         let number = self.next_public_tab_number;
         self.next_public_tab_number += 1;
         let pane_number = self.next_public_pane_number;
@@ -518,7 +519,7 @@ impl Workspace {
             .map(|tab| tab.render_dirty.clone())
             .expect("workspace must always have at least one tab");
 
-        let (tab, terminal, runtime) = if let Some(argv) = argv {
+        let (tab, root_pane) = if let Some(argv) = argv {
             Tab::new_argv_command(
                 number,
                 cwd,
@@ -549,7 +550,7 @@ impl Workspace {
         };
         self.register_new_pane_with_number(tab.root_pane, pane_number);
         self.tabs.push(tab);
-        Ok((self.tabs.len() - 1, terminal, runtime))
+        Ok((self.tabs.len() - 1, root_pane))
     }
 
     pub fn close_tab(&mut self, idx: usize) -> bool {
@@ -806,12 +807,17 @@ impl Workspace {
         argv: Option<&[String]>,
     ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
+        let layout_pane_id = self.tabs[tab_idx]
+            .backsides
+            .iter()
+            .find_map(|(front_id, backside)| (backside.pane_id == pane_id).then_some(*front_id))
+            .unwrap_or(pane_id);
         let pane_number = self.next_public_pane_number;
         let tab_number = self.tabs[tab_idx].number;
         let launch_env = self.launch_env_for_new_pane(tab_number, pane_number, extra_env);
         let tab = &mut self.tabs[tab_idx];
         let previous_focus = tab.layout.focused();
-        tab.layout.focus_pane(pane_id);
+        tab.layout.focus_pane(layout_pane_id);
         let new_pane = match if let Some(argv) = argv {
             match ratio {
                 Some(ratio) => tab.split_focused_argv_command_with_ratio(
@@ -886,8 +892,8 @@ impl Workspace {
             return tab_count <= 1 || self.close_active_tab_and_report();
         }
 
-        if let Some((removed, _terminal_id)) = self.active_tab_mut().and_then(Tab::close_focused) {
-            self.unregister_pane(removed);
+        if let Some(detached) = self.active_tab_mut().and_then(Tab::close_focused) {
+            self.unregister_pane(detached.pane_id);
         }
         false
     }
@@ -895,6 +901,7 @@ impl Workspace {
     /// Remove a specific pane from this workspace without terminating its runtime.
     /// Returns true if the workspace should close.
     pub fn remove_pane(&mut self, pane_id: PaneId) -> bool {
+        let pane_id = self.front_pane_for_backside(pane_id).unwrap_or(pane_id);
         let Some(tab_idx) = self.find_tab_index_for_pane(pane_id) else {
             return false;
         };
@@ -914,13 +921,14 @@ impl Workspace {
             return false;
         }
 
-        if let Some((removed, _terminal_id)) = self.tabs[tab_idx].remove_pane(pane_id) {
-            self.unregister_pane(removed);
+        if let Some(detached) = self.tabs[tab_idx].remove_pane(pane_id) {
+            self.unregister_pane(detached.pane_id);
         }
         false
     }
 
     pub(crate) fn take_pane_for_move(&mut self, pane_id: PaneId) -> Option<TakenPane> {
+        let pane_id = self.front_pane_for_backside(pane_id).unwrap_or(pane_id);
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
         let pane_count = self.tabs[tab_idx].layout.pane_count();
         if pane_count <= 1 {
@@ -950,6 +958,9 @@ impl Workspace {
         direction: Direction,
         ratio: f32,
     ) -> Result<PaneId, MovedPane> {
+        let target_pane_id = self
+            .front_pane_for_backside(target_pane_id)
+            .unwrap_or(target_pane_id);
         let pane_id = moved.pane_id;
         let Some(tab) = self.tabs.get_mut(tab_idx) else {
             return Err(moved);
@@ -1101,17 +1112,55 @@ impl Workspace {
     }
 
     pub fn find_tab_index_for_pane(&self, pane_id: PaneId) -> Option<usize> {
-        self.tabs
-            .iter()
-            .position(|tab| tab.panes.contains_key(&pane_id))
+        self.tabs.iter().position(|tab| {
+            tab.panes.contains_key(&pane_id)
+                || tab
+                    .backsides
+                    .values()
+                    .any(|backside| backside.pane_id == pane_id)
+        })
     }
 
     pub fn pane_state(&self, pane_id: PaneId) -> Option<&PaneState> {
-        self.tabs.iter().find_map(|tab| tab.panes.get(&pane_id))
+        self.tabs.iter().find_map(|tab| {
+            tab.panes.get(&pane_id).or_else(|| {
+                tab.backsides
+                    .values()
+                    .find(|backside| backside.pane_id == pane_id)
+                    .map(|backside| &backside.pane)
+            })
+        })
     }
 
     pub fn terminal_id(&self, pane_id: PaneId) -> Option<&TerminalId> {
         self.tabs.iter().find_map(|tab| tab.terminal_id(pane_id))
+    }
+
+    pub fn displayed_terminal_id(&self, pane_id: PaneId) -> Option<&TerminalId> {
+        self.tabs
+            .iter()
+            .find_map(|tab| tab.displayed_terminal_id(pane_id))
+    }
+
+    pub fn terminal_ids_for_slot(&self, pane_id: PaneId) -> Option<[&TerminalId; 2]> {
+        self.tabs
+            .iter()
+            .find_map(|tab| tab.terminal_ids_for_slot(pane_id))
+    }
+
+    pub fn toggle_backside(&mut self, pane_id: PaneId) -> bool {
+        self.tabs
+            .iter_mut()
+            .find(|tab| tab.panes.contains_key(&pane_id))
+            .is_some_and(|tab| tab.toggle_backside(pane_id))
+    }
+
+    pub fn front_pane_for_backside(&self, pane_id: PaneId) -> Option<PaneId> {
+        self.tabs.iter().find_map(|tab| {
+            tab.backsides
+                .iter()
+                .find_map(|(front_id, backside)| (backside.pane_id == pane_id).then_some(*front_id))
+        })
     }
 
     pub fn focused_pane_id(&self) -> Option<PaneId> {
@@ -1119,6 +1168,7 @@ impl Workspace {
     }
 
     pub fn close_pane(&mut self, pane_id: PaneId) -> bool {
+        let pane_id = self.front_pane_for_backside(pane_id).unwrap_or(pane_id);
         let tab_idx = match self.find_tab_index_for_pane(pane_id) {
             Some(idx) => idx,
             None => return false,
@@ -1139,8 +1189,8 @@ impl Workspace {
             return false;
         }
 
-        if let Some((removed, _terminal_id)) = self.tabs[tab_idx].close_pane(pane_id) {
-            self.unregister_pane(removed);
+        if let Some(detached) = self.tabs[tab_idx].close_pane(pane_id) {
+            self.unregister_pane(detached.pane_id);
         }
         false
     }
@@ -1186,12 +1236,23 @@ impl Workspace {
         let terminal_id = TerminalId::alloc();
         let mut panes = HashMap::new();
         panes.insert(root_id, PaneState::new(terminal_id));
+        let back_pane_id = PaneId::alloc();
+        let mut backsides = HashMap::new();
+        backsides.insert(
+            root_id,
+            PaneBackside {
+                pane_id: back_pane_id,
+                pane: PaneState::new(TerminalId::alloc()),
+                visible: false,
+            },
+        );
         let tab = Tab {
             custom_name: None,
             number: 1,
             root_pane: root_id,
             layout,
             panes,
+            backsides,
             runtimes: HashMap::new(),
             zoomed: false,
             events,
@@ -1226,6 +1287,14 @@ impl Workspace {
         let new_id = tab.layout.split_focused(direction);
         tab.panes
             .insert(new_id, PaneState::new(TerminalId::alloc()));
+        tab.backsides.insert(
+            new_id,
+            PaneBackside {
+                pane_id: PaneId::alloc(),
+                pane: PaneState::new(TerminalId::alloc()),
+                visible: false,
+            },
+        );
         self.register_new_pane(new_id);
         new_id
     }
@@ -1237,12 +1306,22 @@ impl Workspace {
         let (layout, root_id) = TileLayout::new();
         let mut panes = HashMap::new();
         panes.insert(root_id, PaneState::new(TerminalId::alloc()));
+        let mut backsides = HashMap::new();
+        backsides.insert(
+            root_id,
+            PaneBackside {
+                pane_id: PaneId::alloc(),
+                pane: PaneState::new(TerminalId::alloc()),
+                visible: false,
+            },
+        );
         let tab = Tab {
             custom_name: name.map(str::to_string),
             number: self.next_public_tab_number,
             root_pane: root_id,
             layout,
             panes,
+            backsides,
             runtimes: HashMap::new(),
             zoomed: false,
             events,
@@ -1372,7 +1451,37 @@ impl Workspace {
                     self.id,
                     pane.attached_terminal_id
                 );
+                let backside = tab.backsides.get(pane_id).unwrap_or_else(|| {
+                    panic!(
+                        "workspace {} pane {:?} has no resident backside",
+                        self.id, pane_id
+                    )
+                });
+                assert_ne!(
+                    *pane_id, backside.pane_id,
+                    "workspace {} pane {:?} reuses its front id for the backside",
+                    self.id, pane_id
+                );
+                assert!(
+                    live_panes.insert(backside.pane_id),
+                    "workspace {} backside pane {:?} appears more than once",
+                    self.id,
+                    backside.pane_id
+                );
+                assert!(
+                    terminal_ids.insert(backside.pane.attached_terminal_id.clone()),
+                    "workspace {} backside terminal {} is attached more than once",
+                    self.id,
+                    backside.pane.attached_terminal_id
+                );
             }
+            assert_eq!(
+                tab.backsides.len(),
+                tab.panes.len(),
+                "workspace {} tab {} must pair every front pane with one backside",
+                self.id,
+                tab_idx
+            );
         }
 
         assert!(
@@ -1390,8 +1499,13 @@ impl Workspace {
 
         let public_pane_keys: std::collections::HashSet<_> =
             self.public_pane_numbers.keys().copied().collect();
+        let layout_live_panes: std::collections::HashSet<_> = self
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.panes.keys().copied())
+            .collect();
         assert_eq!(
-            public_pane_keys, live_panes,
+            public_pane_keys, layout_live_panes,
             "workspace {} public pane map must exactly match live panes",
             self.id
         );
@@ -1607,5 +1721,51 @@ mod tests {
         assert_eq!(ws.tabs[2].root_pane, moved_root);
         assert_eq!(ws.tabs[ws.active_tab].root_pane, active_root);
         ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn panes_have_distinct_resident_backsides_and_toggle_only_visibility() {
+        let mut ws = Workspace::test_new("backsides");
+        let front_id = ws.tabs[0].root_pane;
+        let front_terminal = ws.tabs[0].front_terminal_id(front_id).unwrap().clone();
+        let backside = ws.tabs[0].backsides.get(&front_id).unwrap();
+        let back_id = backside.pane_id;
+        let back_terminal = backside.pane.attached_terminal_id.clone();
+
+        assert_ne!(front_id, back_id);
+        assert_ne!(front_terminal, back_terminal);
+        assert_eq!(ws.displayed_terminal_id(front_id), Some(&front_terminal));
+        assert!(ws.toggle_backside(front_id));
+        assert_eq!(ws.displayed_terminal_id(front_id), Some(&back_terminal));
+        assert_eq!(
+            ws.pane_state(back_id).unwrap().attached_terminal_id,
+            back_terminal
+        );
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn split_move_and_close_keep_backside_paired_with_its_front() {
+        let mut source = Workspace::test_new("source");
+        let moved_front = source.test_split(Direction::Horizontal);
+        let moved_back = source.tabs[0].backsides[&moved_front].pane_id;
+        let taken = source.take_pane_for_move(moved_front).unwrap();
+        assert_eq!(taken.moved.backside.as_ref().unwrap().pane_id, moved_back);
+
+        let mut target = Workspace::test_new("target");
+        let target_front = target.tabs[0].root_pane;
+        let inserted = target.insert_moved_pane_into_tab(
+            0,
+            target_front,
+            taken.moved,
+            Direction::Vertical,
+            0.5,
+        );
+        assert!(inserted.is_ok());
+        assert_eq!(target.tabs[0].backsides[&moved_front].pane_id, moved_back);
+        assert!(!target.close_pane(moved_front));
+        assert!(!target.tabs[0].backsides.contains_key(&moved_front));
+        assert!(target.pane_state(moved_back).is_none());
+        target.assert_invariants_for_test();
     }
 }

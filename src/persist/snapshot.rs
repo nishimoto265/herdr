@@ -9,7 +9,7 @@ use crate::terminal::TerminalRuntimeRegistry;
 use crate::workspace::Workspace;
 
 /// Current snapshot format version.
-pub(super) const SNAPSHOT_VERSION: u32 = 3;
+pub(super) const SNAPSHOT_VERSION: u32 = 4;
 
 /// Serializable snapshot of the entire herdr session.
 #[derive(Serialize, Deserialize)]
@@ -87,11 +87,21 @@ pub struct TabSnapshot {
     pub custom_name: Option<String>,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub backsides: HashMap<u32, BacksideSnapshot>,
     pub zoomed: bool,
     #[serde(default)]
     pub focused: Option<u32>,
     #[serde(default)]
     pub root_pane: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct BacksideSnapshot {
+    pub pane_id: u32,
+    pub pane: PaneSnapshot,
+    #[serde(default)]
+    pub visible: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -146,6 +156,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             custom_name: None,
             layout: snap.layout,
             panes: snap.panes,
+            backsides: HashMap::new(),
             zoomed: snap.zoomed,
             focused: snap.focused,
             root_pane: snap.root_pane,
@@ -315,67 +326,80 @@ fn capture_tab(
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> TabSnapshot {
     let mut panes = HashMap::new();
-    for id in tab.panes.keys() {
-        let cwd = tab
-            .cwd_for_pane(*id, terminals, terminal_runtimes)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
-        let label = tab
-            .panes
-            .get(id)
-            .and_then(|pane| terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.manual_label.clone());
-        let agent_name = tab
-            .panes
-            .get(id)
-            .and_then(|pane| terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.agent_name.clone());
-        let launch_argv = tab
-            .panes
-            .get(id)
-            .and_then(|pane| terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.launch_argv.clone());
-        let agent_session =
-            tab.panes
-                .get(id)
-                .and_then(|pane| terminals.get(&pane.attached_terminal_id))
-                .and_then(|terminal| {
-                    if let Some(authority) = terminal.hook_authority.as_ref() {
-                        if let Some(session_ref) = authority.session_ref.as_ref() {
-                            return Some(PaneAgentSessionSnapshot {
-                                source: authority.source.clone(),
-                                agent: authority.agent_label.clone(),
-                                kind: session_ref.kind,
-                                value: session_ref.value.clone(),
-                            });
-                        }
-                    }
-                    terminal.persisted_agent_session.as_ref().map(|session| {
-                        PaneAgentSessionSnapshot {
-                            source: session.source.clone(),
-                            agent: session.agent.clone(),
-                            kind: session.session_ref.kind,
-                            value: session.session_ref.value.clone(),
-                        }
-                    })
-                });
+    for (id, pane) in &tab.panes {
         panes.insert(
             id.raw(),
-            PaneSnapshot {
-                cwd,
-                label,
-                agent_name,
-                agent_session,
-                launch_argv,
-            },
+            capture_pane_snapshot(pane, terminals, terminal_runtimes),
         );
     }
+    let backsides = tab
+        .backsides
+        .iter()
+        .map(|(front_id, backside)| {
+            (
+                front_id.raw(),
+                BacksideSnapshot {
+                    pane_id: backside.pane_id.raw(),
+                    pane: capture_pane_snapshot(&backside.pane, terminals, terminal_runtimes),
+                    visible: backside.visible,
+                },
+            )
+        })
+        .collect();
     TabSnapshot {
         custom_name: tab.custom_name.clone(),
         layout: capture_node(tab.layout.root()),
         panes,
+        backsides,
         zoomed: tab.zoomed,
         focused: Some(tab.layout.focused().raw()),
         root_pane: Some(tab.root_pane.raw()),
+    }
+}
+
+fn capture_pane_snapshot(
+    pane: &crate::pane::PaneState,
+    terminals: &std::collections::HashMap<
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalState,
+    >,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+) -> PaneSnapshot {
+    let terminal = terminals.get(&pane.attached_terminal_id);
+    let cwd = terminal_runtimes
+        .get(&pane.attached_terminal_id)
+        .and_then(|runtime| runtime.cwd())
+        .or_else(|| terminal.map(|terminal| terminal.cwd.clone()))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+    let agent_session = terminal
+        .and_then(|terminal| terminal.hook_authority.as_ref())
+        .and_then(|authority| {
+            authority
+                .session_ref
+                .as_ref()
+                .map(|session_ref| PaneAgentSessionSnapshot {
+                    source: authority.source.clone(),
+                    agent: authority.agent_label.clone(),
+                    kind: session_ref.kind,
+                    value: session_ref.value.clone(),
+                })
+        })
+        .or_else(|| {
+            terminal
+                .and_then(|terminal| terminal.persisted_agent_session.as_ref())
+                .map(|session| PaneAgentSessionSnapshot {
+                    source: session.source.clone(),
+                    agent: session.agent.clone(),
+                    kind: session.session_ref.kind,
+                    value: session.session_ref.value.clone(),
+                })
+        });
+    PaneSnapshot {
+        cwd,
+        label: terminal.and_then(|terminal| terminal.manual_label.clone()),
+        agent_name: terminal.and_then(|terminal| terminal.agent_name.clone()),
+        agent_session,
+        launch_argv: terminal.and_then(|terminal| terminal.launch_argv.clone()),
     }
 }
 
@@ -409,6 +433,11 @@ fn capture_tab_history(
     for (id, pane) in &tab.panes {
         if let Some(history) = capture_pane_history(Some(pane), terminal_runtimes) {
             panes.insert(id.raw(), history);
+        }
+    }
+    for backside in tab.backsides.values() {
+        if let Some(history) = capture_pane_history(Some(&backside.pane), terminal_runtimes) {
+            panes.insert(backside.pane_id.raw(), history);
         }
     }
     panes
@@ -640,6 +669,7 @@ mod tests {
                         second: Box::new(LayoutSnapshot::Pane(1)),
                     },
                     panes,
+                    backsides: HashMap::new(),
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
@@ -1195,6 +1225,7 @@ mod tests {
                         second: Box::new(LayoutSnapshot::Pane(1)),
                     },
                     panes,
+                    backsides: HashMap::new(),
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
@@ -1215,5 +1246,151 @@ mod tests {
             restored.workspaces[0].tabs[0].panes[&0].cwd,
             PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test")
         );
+    }
+
+    #[test]
+    fn snapshot_preserves_backside_identity_metadata_and_visible_face() {
+        let mut state = AppState::test_new();
+        state.workspaces = vec![Workspace::test_new("backside")];
+        state.active = Some(0);
+        state.selected = 0;
+        state.ensure_test_terminals();
+        let front_id = state.workspaces[0].tabs[0].root_pane;
+        let back_id = state.workspaces[0].tabs[0].backsides[&front_id].pane_id;
+        assert!(state.workspaces[0].toggle_backside(front_id));
+
+        let snapshot = capture_from_state(&state);
+        let backside = &snapshot.workspaces[0].tabs[0].backsides[&front_id.raw()];
+        assert_eq!(backside.pane_id, back_id.raw());
+        assert!(backside.visible);
+
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let parsed = parse_snapshot(&json).unwrap();
+        let parsed_backside = &parsed.workspaces[0].tabs[0].backsides[&front_id.raw()];
+        assert_eq!(parsed_backside.pane_id, back_id.raw());
+        assert!(parsed_backside.visible);
+    }
+
+    #[tokio::test]
+    async fn capture_and_restore_round_trip_preserves_both_pane_faces() {
+        let mut state = AppState::test_new();
+        state.workspaces = vec![Workspace::test_new("backside-roundtrip")];
+        state.active = Some(0);
+        state.selected = 0;
+        state.ensure_test_terminals();
+        let front_id = state.workspaces[0].tabs[0].root_pane;
+        let back_id = state.workspaces[0].tabs[0].backsides[&front_id].pane_id;
+        let front_terminal_id = state.workspaces[0].tabs[0].panes[&front_id]
+            .attached_terminal_id
+            .clone();
+        let back_terminal_id = state.workspaces[0].tabs[0].backsides[&front_id]
+            .pane
+            .attached_terminal_id
+            .clone();
+        for (terminal_id, label, session) in [
+            (&front_terminal_id, "front-label", "front-session"),
+            (&back_terminal_id, "back-label", "back-session"),
+        ] {
+            let terminal = state.terminals.get_mut(terminal_id).unwrap();
+            terminal.set_manual_label(label.into());
+            terminal.set_agent_name("opencode".into());
+            terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:opencode".into(),
+                agent: "opencode".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id(session).unwrap(),
+            });
+        }
+        assert!(state.workspaces[0].toggle_backside(front_id));
+
+        let mut source_runtimes = TerminalRuntimeRegistry::new();
+        source_runtimes.insert(
+            front_terminal_id,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(
+                80,
+                24,
+                b"FRONT_CAPTURE_HISTORY\r\n",
+            ),
+        );
+        source_runtimes.insert(
+            back_terminal_id,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(
+                80,
+                24,
+                b"BACK_CAPTURE_HISTORY\r\n",
+            ),
+        );
+        let snapshot = capture_from_state_with_runtimes(&state, &source_runtimes);
+        let history = capture_history_from_state_with_runtimes(&state, &source_runtimes);
+        assert!(history.workspaces[0].tabs[0].panes[&front_id.raw()]
+            .ansi
+            .contains("FRONT_CAPTURE_HISTORY"));
+        assert!(history.workspaces[0].tabs[0].panes[&back_id.raw()]
+            .ansi
+            .contains("BACK_CAPTURE_HISTORY"));
+        let (events, _events_rx) = tokio::sync::mpsc::channel(8);
+        let (workspaces, terminals, restored_runtimes) = crate::persist::restore::restore(
+            &snapshot,
+            Some(&history),
+            24,
+            80,
+            4096,
+            "/bin/sh",
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+
+        let tab = &workspaces[0].tabs[0];
+        let restored_front_id = tab.root_pane;
+        let restored_backside = &tab.backsides[&restored_front_id];
+        assert!(restored_backside.visible);
+        assert_ne!(restored_front_id, restored_backside.pane_id);
+        assert_ne!(front_id, back_id);
+        let restored_front_terminal = &tab.panes[&restored_front_id].attached_terminal_id;
+        let restored_back_terminal = &restored_backside.pane.attached_terminal_id;
+        assert_ne!(restored_front_terminal, restored_back_terminal);
+        assert_eq!(
+            terminals[restored_front_terminal].manual_label.as_deref(),
+            Some("front-label")
+        );
+        assert_eq!(
+            terminals[restored_back_terminal].manual_label.as_deref(),
+            Some("back-label")
+        );
+        assert_eq!(
+            terminals[restored_front_terminal]
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| session.session_ref.value.as_str()),
+            Some("front-session")
+        );
+        assert_eq!(
+            terminals[restored_back_terminal]
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| session.session_ref.value.as_str()),
+            Some("back-session")
+        );
+        let restored_front_text = restored_runtimes
+            .get(restored_front_terminal)
+            .unwrap()
+            .recent_unwrapped_text(1000);
+        let restored_back_text = restored_runtimes
+            .get(restored_back_terminal)
+            .unwrap()
+            .recent_unwrapped_text(1000);
+        assert!(
+            restored_front_text.contains("FRONT_CAPTURE_HISTORY"),
+            "restored front text: {restored_front_text:?}"
+        );
+        assert!(
+            restored_back_text.contains("BACK_CAPTURE_HISTORY"),
+            "restored back text: {restored_back_text:?}"
+        );
+        for runtime in restored_runtimes.values() {
+            let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
+        }
     }
 }

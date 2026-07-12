@@ -161,7 +161,7 @@ impl App {
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return encode_error(id, "workspace_not_found", "workspace not found");
         };
-        let (tab_idx, terminal, runtime) = match ws.create_tab_argv_command(
+        let (tab_idx, new_pane) = match ws.create_tab_argv_command(
             rows.max(4),
             cols.max(10),
             cwd,
@@ -173,16 +173,10 @@ impl App {
             Ok(result) => result,
             Err(err) => return encode_error(id, "plugin_pane_open_failed", err.to_string()),
         };
-        let pane_id = ws.tabs[tab_idx].root_pane;
         if params.focus {
             self.state.switch_workspace_tab(ws_idx, tab_idx);
             self.state.mode = crate::app::Mode::Terminal;
         }
-        let new_pane = crate::workspace::NewPane {
-            pane_id,
-            terminal,
-            runtime,
-        };
         self.finish_plugin_pane_open(
             id,
             ws_idx,
@@ -234,21 +228,20 @@ impl App {
         ws_idx: usize,
         created_tab_idx: Option<usize>,
         layout_tab_idx: Option<usize>,
-        new_pane: crate::workspace::NewPane,
+        mut new_pane: crate::workspace::NewPane,
         plugin_id: String,
         pane_manifest: PluginManifestPane,
     ) -> String {
         let entrypoint = pane_manifest.id.clone();
-        let mut terminal = new_pane.terminal;
-        terminal.set_manual_label(pane_manifest.title.clone());
-        let terminal_id = terminal.id.clone();
-        self.terminal_runtimes
-            .insert(terminal_id.clone(), new_pane.runtime);
+        new_pane
+            .terminal
+            .set_manual_label(pane_manifest.title.clone());
+        let new_pane_id = new_pane.pane_id;
         self.state
             .remove_alias_shadowed_by_new_pane(new_pane.pane_id);
-        self.state.terminals.insert(terminal_id, terminal);
+        self.install_new_pane_runtimes(new_pane);
         self.state.plugin_panes.insert(
-            new_pane.pane_id,
+            new_pane_id,
             crate::app::state::PluginPaneRecord {
                 plugin_id: plugin_id.clone(),
                 entrypoint: entrypoint.clone(),
@@ -263,7 +256,7 @@ impl App {
             }
         }
         self.schedule_session_save();
-        let Some(pane) = self.pane_info(ws_idx, new_pane.pane_id) else {
+        let Some(pane) = self.pane_info(ws_idx, new_pane_id) else {
             return encode_error(id, "plugin_pane_open_failed", "plugin pane disappeared");
         };
         self.emit_event(crate::api::schema::EventEnvelope {

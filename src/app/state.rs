@@ -1602,6 +1602,33 @@ impl AppState {
         terminal_runtimes.get(terminal_id)
     }
 
+    pub(crate) fn displayed_runtime_for_pane_in_workspace<'a>(
+        &'a self,
+        terminal_runtimes: &'a crate::terminal::TerminalRuntimeRegistry,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+    ) -> Option<&'a crate::terminal::TerminalRuntime> {
+        #[cfg(test)]
+        if let Some(runtime) = self.workspaces.get(ws_idx)?.test_runtimes.get(&pane_id) {
+            return Some(runtime);
+        }
+        #[cfg(test)]
+        if let Some(runtime) = self
+            .workspaces
+            .get(ws_idx)?
+            .tabs
+            .iter()
+            .find_map(|tab| tab.runtimes.get(&pane_id))
+        {
+            return Some(runtime);
+        }
+        let terminal_id = self
+            .workspaces
+            .get(ws_idx)?
+            .displayed_terminal_id(pane_id)?;
+        terminal_runtimes.get(terminal_id)
+    }
+
     #[cfg(test)]
     pub(crate) fn runtime_for_pane<'a>(
         &'a self,
@@ -1629,7 +1656,7 @@ impl AppState {
     ) -> Option<&'a crate::terminal::TerminalRuntime> {
         let ws = self.workspaces.get(ws_idx)?;
         let pane_id = ws.focused_pane_id()?;
-        self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
+        self.displayed_runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
     }
 
     pub fn is_active_pane(
@@ -1847,6 +1874,17 @@ impl AppState {
                         );
                     }
                 }
+                for backside in tab.backsides.values() {
+                    let pane = &backside.pane;
+                    if !self.terminals.contains_key(&pane.attached_terminal_id) {
+                        let cwd = ws.identity_cwd.clone();
+                        self.terminals.insert(
+                            pane.attached_terminal_id.clone(),
+                            TerminalState::new(pane.attached_terminal_id.clone(), cwd)
+                                .with_respawn_shell_on_exit(),
+                        );
+                    }
+                }
             }
         }
     }
@@ -1983,6 +2021,25 @@ impl AppState {
                         "pane {:?} is attached to missing terminal {}",
                         pane_id,
                         pane.attached_terminal_id
+                    );
+                }
+                for backside in tab.backsides.values() {
+                    assert!(
+                        pane_ids.insert(backside.pane_id),
+                        "backside pane {:?} appears in more than one workspace",
+                        backside.pane_id
+                    );
+                    assert!(
+                        attached_terminal_ids.insert(backside.pane.attached_terminal_id.clone()),
+                        "backside terminal {} is attached to more than one pane",
+                        backside.pane.attached_terminal_id
+                    );
+                    assert!(
+                        self.terminals
+                            .contains_key(&backside.pane.attached_terminal_id),
+                        "backside pane {:?} is attached to missing terminal {}",
+                        backside.pane_id,
+                        backside.pane.attached_terminal_id
                     );
                 }
             }
@@ -2317,5 +2374,208 @@ mod tests {
                 "Collapse"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_lookup_routes_to_the_visible_side_only() {
+        let mut state = AppState::test_new();
+        let ws = crate::workspace::Workspace::test_new("visible-side");
+        let front_id = ws.tabs[0].root_pane;
+        let front_terminal = ws.tabs[0].front_terminal_id(front_id).unwrap().clone();
+        let back_terminal = ws.tabs[0].backsides[&front_id]
+            .pane
+            .attached_terminal_id
+            .clone();
+        state.workspaces = vec![ws];
+        state.active = Some(0);
+        state.selected = 0;
+        state.ensure_test_terminals();
+        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        runtimes.insert(
+            front_terminal.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"front"),
+        );
+        runtimes.insert(
+            back_terminal.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"back"),
+        );
+
+        assert!(std::ptr::eq(
+            state
+                .displayed_runtime_for_pane_in_workspace(&runtimes, 0, front_id)
+                .unwrap(),
+            runtimes.get(&front_terminal).unwrap()
+        ));
+        assert!(state.toggle_focused_backside());
+        assert!(std::ptr::eq(
+            state
+                .displayed_runtime_for_pane_in_workspace(&runtimes, 0, front_id)
+                .unwrap(),
+            runtimes.get(&back_terminal).unwrap()
+        ));
+        assert!(std::ptr::eq(
+            state
+                .runtime_for_pane_in_workspace(&runtimes, 0, front_id)
+                .unwrap(),
+            runtimes.get(&front_terminal).unwrap()
+        ));
+    }
+
+    #[tokio::test]
+    async fn hidden_backside_output_continues_until_it_is_visible_again() {
+        let mut state = AppState::test_new();
+        let ws = crate::workspace::Workspace::test_new("hidden-progress");
+        let front_id = ws.tabs[0].root_pane;
+        let front_terminal = ws.tabs[0].front_terminal_id(front_id).unwrap().clone();
+        let back_terminal = ws.tabs[0].backsides[&front_id]
+            .pane
+            .attached_terminal_id
+            .clone();
+        state.workspaces = vec![ws];
+        state.active = Some(0);
+        state.selected = 0;
+        state.ensure_test_terminals();
+        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        runtimes.insert(
+            front_terminal.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"front\r\n"),
+        );
+        runtimes.insert(
+            back_terminal.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"back-start\r\n"),
+        );
+
+        assert!(state.toggle_focused_backside());
+        assert!(state
+            .focused_runtime_in_workspace(&runtimes, 0)
+            .unwrap()
+            .visible_text()
+            .contains("back-start"));
+        assert!(state.toggle_focused_backside());
+        runtimes
+            .get(&back_terminal)
+            .unwrap()
+            .test_process_pty_bytes(b"back-hidden-progress\r\n");
+        assert!(!state
+            .focused_runtime_in_workspace(&runtimes, 0)
+            .unwrap()
+            .visible_text()
+            .contains("back-hidden-progress"));
+
+        assert!(state.toggle_focused_backside());
+        assert!(state
+            .focused_runtime_in_workspace(&runtimes, 0)
+            .unwrap()
+            .visible_text()
+            .contains("back-hidden-progress"));
+        assert!(runtimes.get(&front_terminal).is_some());
+        assert!(runtimes.get(&back_terminal).is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hidden_backside_process_keeps_running_and_emits_delayed_output() {
+        let mut state = AppState::test_new();
+        let ws = crate::workspace::Workspace::test_new("hidden-process");
+        let front_id = ws.tabs[0].root_pane;
+        let back_id = ws.tabs[0].backsides[&front_id].pane_id;
+        let front_terminal = ws.tabs[0].front_terminal_id(front_id).unwrap().clone();
+        let back_terminal = ws.tabs[0].backsides[&front_id]
+            .pane
+            .attached_terminal_id
+            .clone();
+        state.workspaces = vec![ws];
+        state.active = Some(0);
+        state.selected = 0;
+        state.ensure_test_terminals();
+        let (events, _events_rx) = tokio::sync::mpsc::channel(8);
+        let render_notify = std::sync::Arc::new(tokio::sync::Notify::new());
+        let render_dirty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cwd = std::env::current_dir().unwrap();
+        let shell =
+            crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin);
+        let launch_env = crate::pane::PaneLaunchEnv::default();
+        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        for (pane_id, terminal_id) in [
+            (front_id, front_terminal.clone()),
+            (back_id, back_terminal.clone()),
+        ] {
+            let runtime = crate::terminal::TerminalRuntime::spawn(
+                pane_id,
+                24,
+                80,
+                cwd.clone(),
+                4096,
+                crate::terminal_theme::TerminalTheme::default(),
+                shell,
+                &launch_env,
+                events.clone(),
+                render_notify.clone(),
+                render_dirty.clone(),
+            )
+            .expect("spawn test PTY process");
+            runtimes.insert(terminal_id, runtime);
+        }
+
+        let startup_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while runtimes.get(&back_terminal).unwrap().cwd().is_none()
+            && std::time::Instant::now() < startup_deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(state.toggle_focused_backside());
+        runtimes
+            .get(&back_terminal)
+            .unwrap()
+            .send_bytes(bytes::Bytes::from_static(b"stty -echo\n"))
+            .await
+            .expect("disable PTY input echo");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        runtimes
+            .get(&back_terminal)
+            .unwrap()
+            .try_send_bytes(bytes::Bytes::from_static(
+                b"sleep 0.05; printf 'BACK_DELAYED_OUTPUT\\n'\n",
+            ))
+            .expect("send command to backside PTY");
+        assert!(state.toggle_focused_backside());
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !runtimes
+            .get(&back_terminal)
+            .unwrap()
+            .visible_text()
+            .contains("BACK_DELAYED_OUTPUT")
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let hidden_back_text = runtimes.get(&back_terminal).unwrap().visible_text();
+        assert!(
+            hidden_back_text.contains("BACK_DELAYED_OUTPUT"),
+            "timed out waiting for delayed PTY output: {hidden_back_text:?}"
+        );
+        assert!(!state
+            .focused_runtime_in_workspace(&runtimes, 0)
+            .unwrap()
+            .visible_text()
+            .contains("BACK_DELAYED_OUTPUT"));
+        assert!(runtimes.get(&front_terminal).is_some());
+        assert!(runtimes.get(&back_terminal).is_some());
+
+        assert!(state.toggle_focused_backside());
+        assert!(
+            std::ptr::eq(
+                state.focused_runtime_in_workspace(&runtimes, 0).unwrap(),
+                runtimes.get(&back_terminal).unwrap()
+            ),
+            "re-displaying the slot must select the runtime containing {hidden_back_text:?}"
+        );
+        for runtime in [&front_terminal, &back_terminal]
+            .into_iter()
+            .filter_map(|terminal_id| runtimes.get(terminal_id))
+        {
+            let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
+        }
     }
 }

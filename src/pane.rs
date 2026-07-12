@@ -96,6 +96,14 @@ impl PaneLaunchEnv {
         });
         self
     }
+
+    pub(crate) fn for_backside(&self) -> Self {
+        let mut backside = self.clone();
+        if let Some(identity) = backside.identity.as_mut() {
+            identity.pane_id = format!("{}:back", identity.pane_id);
+        }
+        backside
+    }
 }
 
 fn apply_pane_launch_env(cmd: &mut CommandBuilder, launch_env: &PaneLaunchEnv) {
