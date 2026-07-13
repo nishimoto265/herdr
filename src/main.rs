@@ -516,6 +516,7 @@ fn main() -> io::Result<()> {
         println!("       herdr worktree <subcommand> ...");
         println!("       herdr tab <subcommand> ...");
         println!("       herdr notification <subcommand> ...");
+        println!("       herdr review <subcommand> ...");
         println!("       herdr agent <subcommand> ...");
         println!("       herdr pane <subcommand> ...");
         println!("       herdr wait <subcommand> ...");
@@ -567,6 +568,10 @@ fn main() -> io::Result<()> {
             (
                 "herdr notification <subcommand>",
                 "Notification helpers over the socket API",
+            ),
+            (
+                "herdr review <subcommand>",
+                "Submit and inspect Review Agent rule proposals",
             ),
             (
                 "herdr agent <subcommand>",

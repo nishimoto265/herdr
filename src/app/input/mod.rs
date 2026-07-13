@@ -58,7 +58,7 @@ use self::{
     modal::{
         modal_action_from_key, ModalAction, ONBOARDING_WELCOME_ACTIONS, RELEASE_NOTES_ACTIONS,
     },
-    mouse::MouseAction,
+    mouse::{MouseAction, ReviewPanelMouseAction},
     settings::SettingsAction,
 };
 use super::state::{AppState, Mode};
@@ -75,6 +75,9 @@ impl App {
             if let Some(text) = crate::platform::read_clipboard_text() {
                 self.paste_into_active_text_input(&text);
             }
+            return;
+        }
+        if self.state.mode == Mode::Terminal && self.handle_review_panel_key(key_event) {
             return;
         }
 
@@ -243,6 +246,17 @@ impl App {
             return;
         }
 
+        if self.state.mode == Mode::Terminal {
+            match self.state.handle_review_panel_mouse(mouse) {
+                ReviewPanelMouseAction::Ignored => {}
+                ReviewPanelMouseAction::Consumed => return,
+                ReviewPanelMouseAction::Decision(request) => {
+                    self.state.request_review_proposal_decision = Some(request);
+                    return;
+                }
+            }
+        }
+
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && self.state.on_sidebar_divider(mouse.column, mouse.row)
         {
@@ -371,6 +385,58 @@ impl App {
             self.selection_autoscroll_deadline =
                 Some(std::time::Instant::now() + super::SELECTION_AUTOSCROLL_INTERVAL);
         }
+    }
+
+    fn handle_review_panel_key(&mut self, key: KeyEvent) -> bool {
+        if !self.state.review_panel.keyboard_focused {
+            return false;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.state.review_panel.close_manually(),
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.state.review_panel.selected =
+                    self.state.review_panel.selected.saturating_sub(1);
+                self.state.review_panel.scroll = crate::ui::selected_review_card_scroll(
+                    &self.state.review_panel,
+                    self.state.view.review_panel_rect,
+                );
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.state.review_panel.selected = self
+                    .state
+                    .review_panel
+                    .selected
+                    .saturating_add(1)
+                    .min(self.state.review_panel.proposals.len().saturating_sub(1));
+                self.state.review_panel.scroll = crate::ui::selected_review_card_scroll(
+                    &self.state.review_panel,
+                    self.state.view.review_panel_rect,
+                );
+            }
+            KeyCode::PageUp => {
+                self.state.review_panel.scroll = self.state.review_panel.scroll.saturating_sub(
+                    crate::ui::review_panel_page_height(self.state.view.review_panel_rect),
+                );
+            }
+            KeyCode::PageDown => {
+                self.state.review_panel.scroll = self.state.review_panel.scroll.saturating_add(
+                    crate::ui::review_panel_page_height(self.state.view.review_panel_rect),
+                );
+            }
+            KeyCode::Char(key @ ('a' | 'r'))
+                if self.state.request_review_proposal_decision.is_none() =>
+            {
+                let decision = if key == 'a' {
+                    crate::review_agent::RuleProposalDecision::Approve
+                } else {
+                    crate::review_agent::RuleProposalDecision::Reject
+                };
+                self.state.request_review_proposal_decision =
+                    self.state.review_panel.selected_decision_request(decision);
+            }
+            _ => {}
+        }
+        true
     }
 
     fn handle_modified_url_click(&mut self, mouse: MouseEvent) -> bool {
@@ -717,6 +783,22 @@ mod tests {
             tokio::sync::mpsc::unbounded_channel().1,
             crate::api::EventHub::default(),
         )
+    }
+
+    #[tokio::test]
+    async fn focused_review_panel_does_not_steal_keys_from_higher_modal() {
+        let mut app = test_app();
+        app.state.review_panel.open_manually();
+        app.state.mode = Mode::Settings;
+
+        app.handle_key(TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+
+        assert_ne!(app.state.mode, Mode::Settings);
+        assert_eq!(
+            app.state.review_panel.visibility,
+            crate::app::state::ReviewPanelVisibility::ManuallyOpen
+        );
     }
 
     #[tokio::test]

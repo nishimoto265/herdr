@@ -114,6 +114,7 @@ fn apply_terminal_dirty_patch(
     frame: &mut FrameData,
     area: Rect,
     patch: crate::pane::TerminalDirtyPatch,
+    overlay_rects: &[Rect],
 ) -> bool {
     if !rect_fits_frame(area, frame) {
         return false;
@@ -129,7 +130,18 @@ fn apply_terminal_dirty_patch(
         if end > frame.cells.len() {
             return false;
         }
-        frame.cells[start..end].clone_from_slice(&row_cells);
+        for (local_x, cell) in row_cells.into_iter().enumerate() {
+            let frame_x = area.x + local_x as u16;
+            if overlay_rects.iter().any(|rect| {
+                frame_x >= rect.x
+                    && frame_x < rect.x.saturating_add(rect.width)
+                    && frame_y >= rect.y
+                    && frame_y < rect.y.saturating_add(rect.height)
+            }) {
+                continue;
+            }
+            frame.cells[start + local_x] = cell;
+        }
     }
     true
 }
@@ -3193,6 +3205,11 @@ impl HeadlessServer {
         }
 
         let mut touched = false;
+        let mut overlay_rects = vec![self.app.state.view.review_panel_rail_rect];
+        if self.app.state.view.review_panel_overlay {
+            overlay_rects.push(self.app.state.view.review_panel_rect);
+        }
+        overlay_rects.retain(|rect| rect.width > 0 && rect.height > 0);
         for info in pane_infos {
             if !rect_fits_frame(info.inner_rect, &frame) {
                 retained_fallback!("pane_rect_outside_frame");
@@ -3217,7 +3234,12 @@ impl HeadlessServer {
                     if dirty_patch_intersects_hyperlinks(&frame, info.inner_rect, &patch) {
                         retained_fallback!("hyperlink_intersection");
                     }
-                    if !apply_terminal_dirty_patch(&mut frame, info.inner_rect, patch) {
+                    if !apply_terminal_dirty_patch(
+                        &mut frame,
+                        info.inner_rect,
+                        patch,
+                        &overlay_rects,
+                    ) {
                         retained_fallback!("patch_apply_failed");
                     }
                     touched = true;

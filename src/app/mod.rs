@@ -579,6 +579,7 @@ impl App {
             tab_scroll: 0,
             tab_scroll_follow_active: true,
             mobile_switcher_scroll: 0,
+            review_panel: state::ReviewPanelState::default(),
             view: state::ViewState {
                 layout: state::ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
@@ -589,6 +590,10 @@ impl App {
                 tab_scroll_right_hit_area: Rect::default(),
                 new_tab_hit_area: Rect::default(),
                 terminal_area: Rect::default(),
+                review_panel_rect: Rect::default(),
+                review_panel_rail_rect: Rect::default(),
+                review_panel_overlay: false,
+                review_panel_hit_areas: state::ReviewPanelHitAreas::default(),
                 mobile_header_rect: Rect::default(),
                 mobile_menu_hit_area: Rect::default(),
                 toast_hit_area: Rect::default(),
@@ -783,6 +788,7 @@ impl App {
             review_delivery_persist_failure: false,
             prefix_input_source: Box::new(crate::platform::RealPrefixInputSource::default()),
         };
+        app.state.sync_review_panel_proposals(false);
         if app.review_agent_config.runtime_enabled() {
             let actions = app.reconcile_review_delivery_actions();
             app.queue_review_actions_after_persist(actions);

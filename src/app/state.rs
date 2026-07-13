@@ -727,6 +727,126 @@ pub enum ViewLayout {
     Mobile,
 }
 
+/// TUI-only projection of a server-owned rule proposal.
+///
+/// Keeping this adapter type in presentation state avoids coupling rendering to
+/// the runtime store while the review-agent protocol is still being introduced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleProposalView {
+    pub proposal_id: String,
+    pub rule_text: String,
+    pub target_profile_id: String,
+    pub revision: u64,
+}
+
+impl From<&crate::review_agent::RuleProposal> for RuleProposalView {
+    fn from(proposal: &crate::review_agent::RuleProposal) -> Self {
+        Self {
+            proposal_id: proposal.proposal_id.as_str().to_string(),
+            rule_text: proposal.rule_text.clone(),
+            target_profile_id: proposal.target_profile_id.as_str().to_string(),
+            revision: proposal.revision,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewDecisionHitArea {
+    pub rect: Rect,
+    pub request: crate::review_agent::RuleProposalDecisionRequest,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewPanelHitAreas {
+    pub close: Rect,
+    pub decisions: Vec<ReviewDecisionHitArea>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReviewPanelVisibility {
+    #[default]
+    Auto,
+    ManuallyOpen,
+    ManuallyClosed,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewPanelState {
+    pub visibility: ReviewPanelVisibility,
+    pub proposals: Vec<RuleProposalView>,
+    pub selected: usize,
+    pub scroll: usize,
+    pub keyboard_focused: bool,
+}
+
+impl ReviewPanelState {
+    pub fn is_expanded(&self) -> bool {
+        match self.visibility {
+            ReviewPanelVisibility::Auto => !self.proposals.is_empty(),
+            ReviewPanelVisibility::ManuallyOpen => true,
+            ReviewPanelVisibility::ManuallyClosed => false,
+        }
+    }
+
+    pub fn open_manually(&mut self) {
+        self.visibility = ReviewPanelVisibility::ManuallyOpen;
+        self.keyboard_focused = true;
+    }
+
+    pub fn close_manually(&mut self) {
+        self.visibility = ReviewPanelVisibility::ManuallyClosed;
+        self.keyboard_focused = false;
+    }
+
+    #[allow(dead_code)] // Runtime projection calls this once server proposal events are connected.
+    pub fn replace_proposals(&mut self, proposals: Vec<RuleProposalView>) {
+        self.proposals = proposals;
+        self.selected = self.selected.min(self.proposals.len().saturating_sub(1));
+        if self.proposals.is_empty() {
+            self.scroll = 0;
+        }
+    }
+
+    #[allow(dead_code)] // Runtime projection uses this only for a completed decision response.
+    pub fn replace_proposals_after_decision(&mut self, proposals: Vec<RuleProposalView>) {
+        let had_pending = !self.proposals.is_empty();
+        self.replace_proposals(proposals);
+        if had_pending && self.proposals.is_empty() {
+            self.visibility = ReviewPanelVisibility::Auto;
+            self.keyboard_focused = false;
+        }
+    }
+
+    pub fn selected_decision_request(
+        &self,
+        decision: crate::review_agent::RuleProposalDecision,
+    ) -> Option<crate::review_agent::RuleProposalDecisionRequest> {
+        let proposal = self.proposals.get(self.selected)?;
+        Some(crate::review_agent::RuleProposalDecisionRequest {
+            proposal_id: crate::review_agent::RuleProposalId::new(&proposal.proposal_id),
+            expected_revision: proposal.revision,
+            decision,
+        })
+    }
+}
+
+impl AppState {
+    pub(crate) fn sync_review_panel_proposals(&mut self, after_decision: bool) {
+        let proposals = self
+            .review_agent
+            .proposals()
+            .filter(|proposal| proposal.status == crate::review_agent::RuleProposalStatus::Pending)
+            .map(RuleProposalView::from)
+            .collect();
+        if after_decision {
+            self.review_panel
+                .replace_proposals_after_decision(proposals);
+        } else {
+            self.review_panel.replace_proposals(proposals);
+        }
+    }
+}
+
 pub struct ViewState {
     pub layout: ViewLayout,
     pub sidebar_rect: Rect,
@@ -737,6 +857,10 @@ pub struct ViewState {
     pub tab_scroll_right_hit_area: Rect,
     pub new_tab_hit_area: Rect,
     pub terminal_area: Rect,
+    pub review_panel_rect: Rect,
+    pub review_panel_rail_rect: Rect,
+    pub review_panel_overlay: bool,
+    pub review_panel_hit_areas: ReviewPanelHitAreas,
     pub mobile_header_rect: Rect,
     pub mobile_menu_hit_area: Rect,
     pub toast_hit_area: Rect,
@@ -1371,6 +1495,8 @@ pub struct AppState {
     pub tab_scroll: usize,
     pub tab_scroll_follow_active: bool,
     pub mobile_switcher_scroll: usize,
+    /// TUI-only state for the right-side rule proposal panel.
+    pub review_panel: ReviewPanelState,
     // View geometry (computed before render, consumed by render + mouse)
     pub view: ViewState,
     pub(crate) drag: Option<DragState>,
@@ -1753,6 +1879,7 @@ impl AppState {
             tab_scroll: 0,
             tab_scroll_follow_active: true,
             mobile_switcher_scroll: 0,
+            review_panel: ReviewPanelState::default(),
             view: ViewState {
                 layout: ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
@@ -1763,6 +1890,10 @@ impl AppState {
                 tab_scroll_right_hit_area: Rect::default(),
                 new_tab_hit_area: Rect::default(),
                 terminal_area: Rect::default(),
+                review_panel_rect: Rect::default(),
+                review_panel_rail_rect: Rect::default(),
+                review_panel_overlay: false,
+                review_panel_hit_areas: ReviewPanelHitAreas::default(),
                 mobile_header_rect: Rect::default(),
                 mobile_menu_hit_area: Rect::default(),
                 toast_hit_area: Rect::default(),
