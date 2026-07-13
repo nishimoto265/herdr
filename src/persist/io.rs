@@ -45,7 +45,10 @@ pub(super) fn save_to_path(path: &Path, snapshot: &SessionSnapshot) -> std::io::
     save_json_to_path(path, snapshot)
 }
 
-fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io::Result<()> {
+fn save_json_to_path<T: serde::Serialize + ?Sized>(
+    path: &Path,
+    snapshot: &T,
+) -> std::io::Result<()> {
     let target = resolve_write_target(path)?;
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)?;
@@ -56,6 +59,104 @@ fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io:
     if let Err(err) = std::fs::rename(&tmp_path, &target) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(err);
+    }
+    Ok(())
+}
+
+pub(super) fn save_replace_json_to_path<T: serde::Serialize + ?Sized>(
+    path: &Path,
+    value: &T,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(value)?;
+    let tmp_path = path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, &json)?;
+    #[cfg(windows)]
+    if path.exists() {
+        if let Err(err) = std::fs::remove_file(path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+    }
+    if let Err(err) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+    Ok(())
+}
+
+pub(super) fn save_replace_json_with_backup_to_path<T: serde::Serialize + ?Sized>(
+    path: &Path,
+    value: &T,
+) -> std::io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        save_replace_json_to_path(path, value)
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(value)?;
+        let tmp_path = path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, &json)?;
+        replace_file_with_backup_using(path, &tmp_path, std::fs::rename)
+    }
+}
+
+pub(super) fn replace_backup_path(path: &Path) -> PathBuf {
+    path.with_extension("json.bak")
+}
+
+#[cfg(any(windows, test))]
+fn replace_file_with_backup_using(
+    path: &Path,
+    tmp_path: &Path,
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if !path.exists() {
+        if let Err(err) = rename(tmp_path, path) {
+            let _ = std::fs::remove_file(tmp_path);
+            return Err(err);
+        }
+        return Ok(());
+    }
+
+    let backup_path = replace_backup_path(path);
+    match std::fs::remove_file(&backup_path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            let _ = std::fs::remove_file(tmp_path);
+            return Err(err);
+        }
+    }
+    if let Err(err) = rename(path, &backup_path) {
+        let _ = std::fs::remove_file(tmp_path);
+        return Err(err);
+    }
+    if let Err(replace_error) = rename(tmp_path, path) {
+        let restore_result = rename(&backup_path, path);
+        let _ = std::fs::remove_file(tmp_path);
+        return match restore_result {
+            Ok(()) => Err(replace_error),
+            Err(restore_error) => Err(std::io::Error::new(
+                restore_error.kind(),
+                format!(
+                    "failed to replace {}: {replace_error}; failed to restore backup: {restore_error}",
+                    path.display()
+                ),
+            )),
+        };
+    }
+    if let Err(err) = std::fs::remove_file(&backup_path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            warn!(path = %backup_path.display(), err = %err, "failed to remove replaced JSON backup");
+        }
     }
     Ok(())
 }
@@ -280,6 +381,48 @@ mod tests {
         clear_path(&path).unwrap();
 
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn backup_replace_restores_old_file_when_new_file_rename_fails() {
+        let path = temp_session_path("replace-restore");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "old").unwrap();
+        let tmp_path = path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, "new").unwrap();
+        let mut replacement_attempted = false;
+
+        let error = replace_file_with_backup_using(&path, &tmp_path, |from, to| {
+            if from == tmp_path && to == path {
+                replacement_attempted = true;
+                return Err(std::io::Error::other("injected replacement failure"));
+            }
+            std::fs::rename(from, to)
+        })
+        .unwrap_err();
+
+        assert!(replacement_attempted);
+        assert_eq!(error.to_string(), "injected replacement failure");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+        assert!(!replace_backup_path(&path).exists());
+        assert!(!tmp_path.exists());
+    }
+
+    #[test]
+    fn backup_replace_removes_temp_when_initial_rename_fails() {
+        let path = temp_session_path("replace-initial-failure");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let tmp_path = path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, "new").unwrap();
+
+        let error = replace_file_with_backup_using(&path, &tmp_path, |_from, _to| {
+            Err(std::io::Error::other("injected initial failure"))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "injected initial failure");
+        assert!(!path.exists());
+        assert!(!tmp_path.exists());
     }
 
     #[cfg(unix)]

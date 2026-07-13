@@ -221,6 +221,14 @@ fn load_plugin_registry(no_session: bool) -> crate::app::state::InstalledPluginR
         .collect()
 }
 
+fn load_review_agent_state(no_session: bool) -> crate::review_agent::ReviewAgentState {
+    if no_session {
+        crate::review_agent::ReviewAgentState::default()
+    } else {
+        crate::persist::review_agent::load()
+    }
+}
+
 fn agent_panel_sort_from_config(
     sort: crate::config::AgentPanelSortConfig,
 ) -> state::AgentPanelSort {
@@ -522,6 +530,7 @@ impl App {
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
             request_reload_config: false,
+            request_review_proposal_decision: None,
             request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
@@ -646,6 +655,7 @@ impl App {
             agent_manifest_update_status: crate::detect::manifest_update::load_status(),
             integration_install_messages: Vec::new(),
             installed_plugins: load_plugin_registry(no_session),
+            review_agent: load_review_agent_state(no_session),
             plugin_panes: std::collections::HashMap::new(),
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
@@ -982,6 +992,13 @@ impl App {
             if self.state.request_reload_config {
                 self.state.request_reload_config = false;
                 self.reload_config();
+                needs_render = true;
+            }
+
+            if let Some(request) = self.state.request_review_proposal_decision.take() {
+                if let Err(err) = self.decide_review_rule_proposal(request) {
+                    tracing::warn!(err = %err, "failed to apply review rule proposal decision");
+                }
                 needs_render = true;
             }
 

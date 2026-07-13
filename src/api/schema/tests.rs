@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use super::*;
+use crate::review_agent::RuleProposalId;
 
 fn protocol_schema_entry<T: schemars::JsonSchema>(name: &str) -> serde_json::Value {
     let mut schema = serde_json::to_value(schemars::schema_for!(T)).unwrap();
@@ -59,6 +60,64 @@ fn request_uses_dot_method_names() {
 
     let json = serde_json::to_value(&request).unwrap();
     assert_eq!(json["method"], "workspace.create");
+}
+
+#[test]
+fn review_rule_proposal_methods_round_trip() {
+    let requests = [
+        Request {
+            id: "review-submit".into(),
+            method: Method::ReviewRuleProposalSubmit(RuleProposalSubmitParams {
+                rule_text: "Check affected callers.".into(),
+                target_profile_id: ReviewBackendProfileId::new("review-agent"),
+                fingerprint: "check-callers".into(),
+                source_event_id: "completion-1".into(),
+            }),
+        },
+        Request {
+            id: "review-list".into(),
+            method: Method::ReviewRuleProposalList(RuleProposalListParams {
+                status: Some(RuleProposalStatus::Pending),
+            }),
+        },
+    ];
+
+    for request in requests {
+        let json = serde_json::to_value(&request).unwrap();
+        let restored: Request = serde_json::from_value(json).unwrap();
+        assert_eq!(restored, request);
+    }
+}
+
+#[test]
+fn review_rule_proposal_event_round_trips() {
+    let proposal = RuleProposal {
+        proposal_id: RuleProposalId::new("rule-proposal-1"),
+        rule_text: "Check affected callers.".into(),
+        target_profile_id: ReviewBackendProfileId::new("review-agent"),
+        fingerprint: "check-callers".into(),
+        source_event_ids: vec!["completion-1".into(), "completion-2".into()],
+        status: RuleProposalStatus::Pending,
+        revision: 1,
+    };
+    let event = EventEnvelope {
+        event: EventKind::ReviewRuleProposalChanged,
+        data: EventData::ReviewRuleProposalChanged {
+            proposal,
+            change: RuleProposalChange::Proposed,
+        },
+    };
+
+    let json = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["event"], "review_rule_proposal_changed");
+    let restored: EventEnvelope = serde_json::from_value(json).unwrap();
+    assert_eq!(restored, event);
+
+    let subscription = Subscription::ReviewRuleProposalChanged {};
+    let json = serde_json::to_value(&subscription).unwrap();
+    assert_eq!(json["type"], "review.rule_proposal.changed");
+    let restored: Subscription = serde_json::from_value(json).unwrap();
+    assert_eq!(restored, subscription);
 }
 
 #[test]

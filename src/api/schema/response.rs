@@ -15,6 +15,7 @@ use super::plugins::{
     InstalledPluginInfo, PluginActionInfo, PluginCommandLogInfo, PluginInvocationContext,
     PluginPaneInfo,
 };
+use super::review_agent::{ActiveRule, RuleProposal, RuleProposalSubmission};
 use super::server::ServerCapabilities;
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
@@ -226,6 +227,13 @@ pub enum ResponseResult {
     },
     PluginPaneClosed {
         pane_id: String,
+    },
+    RuleProposalSubmitted {
+        submission: RuleProposalSubmission,
+    },
+    RuleProposalList {
+        proposals: Vec<RuleProposal>,
+        active_rules: Vec<ActiveRule>,
     },
     ConfigReload {
         status: crate::config::ConfigReloadStatus,

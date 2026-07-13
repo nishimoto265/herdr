@@ -709,6 +709,14 @@ impl HeadlessServer {
             crate::render_prof::event("full_render_cause.config_reload");
         }
 
+        if let Some(request) = self.app.state.request_review_proposal_decision.take() {
+            if let Err(err) = self.app.decide_review_rule_proposal(request) {
+                error!(err = %err, "failed to apply review rule proposal decision");
+            }
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.review_proposal_decision");
+        }
+
         needs_render
     }
 

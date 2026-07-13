@@ -8,6 +8,7 @@ mod layouts;
 mod panes;
 pub(crate) mod plugins;
 mod responses;
+mod review_agent;
 mod session;
 mod tabs;
 mod workspaces;
@@ -1028,6 +1029,12 @@ impl App {
             }
             Method::PluginPaneClose(params) => {
                 return self.handle_plugin_pane_close(request.id, params);
+            }
+            Method::ReviewRuleProposalSubmit(params) => {
+                return self.handle_review_rule_proposal_submit(request.id, params);
+            }
+            Method::ReviewRuleProposalList(params) => {
+                return self.handle_review_rule_proposal_list(request.id, params);
             }
             _ => {
                 return responses::encode_error(

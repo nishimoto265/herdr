@@ -1341,6 +1341,9 @@ pub struct AppState {
     pub request_submit_worktree_open: bool,
     pub request_submit_worktree_remove: bool,
     pub request_reload_config: bool,
+    /// Trusted interactive-client decision waiting for the App runtime to persist and apply it.
+    pub(crate) request_review_proposal_decision:
+        Option<crate::review_agent::RuleProposalDecisionRequest>,
     /// Set when the headless server should ask attached clients to reload
     /// their client-local sound config from disk.
     pub request_client_config_reload: bool,
@@ -1468,6 +1471,8 @@ pub struct AppState {
     pub integration_install_messages: Vec<String>,
     /// Installed or linked plugins known to this running Herdr instance.
     pub(crate) installed_plugins: InstalledPluginRegistry,
+    /// Server-owned rule proposal and active rule state for the Review Agent.
+    pub(crate) review_agent: crate::review_agent::ReviewAgentState,
     /// Pane ids opened through the plugin pane API.
     pub(crate) plugin_panes: std::collections::HashMap<PaneId, PluginPaneRecord>,
     /// Recent plugin action/event command executions.
@@ -1724,6 +1729,7 @@ impl AppState {
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
             request_reload_config: false,
+            request_review_proposal_decision: None,
             request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
@@ -1848,6 +1854,7 @@ impl AppState {
                 crate::detect::manifest_update::ManifestUpdateStatus::default(),
             integration_install_messages: Vec::new(),
             installed_plugins: std::collections::HashMap::new(),
+            review_agent: crate::review_agent::ReviewAgentState::default(),
             plugin_panes: std::collections::HashMap::new(),
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,

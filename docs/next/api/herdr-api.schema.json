@@ -652,6 +652,26 @@
                 "layout"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "change": {
+                  "$ref": "#/schemas/event/$defs/RuleProposalChange"
+                },
+                "proposal": {
+                  "$ref": "#/schemas/event/$defs/RuleProposal"
+                },
+                "type": {
+                  "const": "review_rule_proposal_changed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "proposal",
+                "change"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -679,7 +699,8 @@
             "pane_exited",
             "pane_agent_detected",
             "pane_agent_status_changed",
-            "layout_updated"
+            "layout_updated",
+            "review_rule_proposal_changed"
           ],
           "type": "string"
         },
@@ -931,6 +952,62 @@
             "viewport_rows"
           ],
           "type": "object"
+        },
+        "RuleProposal": {
+          "properties": {
+            "fingerprint": {
+              "type": "string"
+            },
+            "proposal_id": {
+              "type": "string"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rule_text": {
+              "type": "string"
+            },
+            "source_event_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "status": {
+              "$ref": "#/schemas/event/$defs/RuleProposalStatus"
+            },
+            "target_profile_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "proposal_id",
+            "rule_text",
+            "target_profile_id",
+            "fingerprint",
+            "source_event_ids",
+            "status",
+            "revision"
+          ],
+          "type": "object"
+        },
+        "RuleProposalChange": {
+          "enum": [
+            "proposed",
+            "approved",
+            "rejected"
+          ],
+          "type": "string"
+        },
+        "RuleProposalStatus": {
+          "enum": [
+            "pending",
+            "approved",
+            "rejected"
+          ],
+          "type": "string"
         },
         "SplitDirection": {
           "enum": [
@@ -3053,6 +3130,52 @@
           ],
           "type": "string"
         },
+        "RuleProposalListParams": {
+          "properties": {
+            "status": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/RuleProposalStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "RuleProposalStatus": {
+          "enum": [
+            "pending",
+            "approved",
+            "rejected"
+          ],
+          "type": "string"
+        },
+        "RuleProposalSubmitParams": {
+          "properties": {
+            "fingerprint": {
+              "type": "string"
+            },
+            "rule_text": {
+              "type": "string"
+            },
+            "source_event_id": {
+              "type": "string"
+            },
+            "target_profile_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "rule_text",
+            "target_profile_id",
+            "fingerprint",
+            "source_event_id"
+          ],
+          "type": "object"
+        },
         "ServerLiveHandoffParams": {
           "properties": {
             "expected_protocol": {
@@ -3409,6 +3532,18 @@
               "properties": {
                 "type": {
                   "const": "layout.updated",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "review.rule_proposal.changed",
                   "type": "string"
                 }
               },
@@ -5010,6 +5145,38 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "review.rule_proposal.submit",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/RuleProposalSubmitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "review.rule_proposal.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/RuleProposalListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -5244,6 +5411,29 @@
     },
     "success_response": {
       "$defs": {
+        "ActiveRule": {
+          "properties": {
+            "fingerprint": {
+              "type": "string"
+            },
+            "proposal_id": {
+              "type": "string"
+            },
+            "rule_text": {
+              "type": "string"
+            },
+            "target_profile_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "proposal_id",
+            "rule_text",
+            "target_profile_id",
+            "fingerprint"
+          ],
+          "type": "object"
+        },
         "AgentInfo": {
           "properties": {
             "agent": {
@@ -6032,6 +6222,26 @@
                 "layout"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "change": {
+                  "$ref": "#/schemas/success_response/$defs/RuleProposalChange"
+                },
+                "proposal": {
+                  "$ref": "#/schemas/success_response/$defs/RuleProposal"
+                },
+                "type": {
+                  "const": "review_rule_proposal_changed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "proposal",
+                "change"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -6074,7 +6284,8 @@
             "pane_exited",
             "pane_agent_detected",
             "pane_agent_status_changed",
-            "layout_updated"
+            "layout_updated",
+            "review_rule_proposal_changed"
           ],
           "type": "string"
         },
@@ -8563,6 +8774,48 @@
             },
             {
               "properties": {
+                "submission": {
+                  "$ref": "#/schemas/success_response/$defs/RuleProposalSubmission"
+                },
+                "type": {
+                  "const": "rule_proposal_submitted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "submission"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "active_rules": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ActiveRule"
+                  },
+                  "type": "array"
+                },
+                "proposals": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/RuleProposal"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "rule_proposal_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "proposals",
+                "active_rules"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "diagnostics": {
                   "items": {
                     "type": "string"
@@ -8597,6 +8850,100 @@
               "type": "object"
             }
           ]
+        },
+        "RuleProposal": {
+          "properties": {
+            "fingerprint": {
+              "type": "string"
+            },
+            "proposal_id": {
+              "type": "string"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rule_text": {
+              "type": "string"
+            },
+            "source_event_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "status": {
+              "$ref": "#/schemas/success_response/$defs/RuleProposalStatus"
+            },
+            "target_profile_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "proposal_id",
+            "rule_text",
+            "target_profile_id",
+            "fingerprint",
+            "source_event_ids",
+            "status",
+            "revision"
+          ],
+          "type": "object"
+        },
+        "RuleProposalChange": {
+          "enum": [
+            "proposed",
+            "approved",
+            "rejected"
+          ],
+          "type": "string"
+        },
+        "RuleProposalStatus": {
+          "enum": [
+            "pending",
+            "approved",
+            "rejected"
+          ],
+          "type": "string"
+        },
+        "RuleProposalSubmission": {
+          "properties": {
+            "evidence_count": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "outcome": {
+              "$ref": "#/schemas/success_response/$defs/RuleProposalSubmitOutcome"
+            },
+            "proposal": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/RuleProposal"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "outcome",
+            "evidence_count"
+          ],
+          "type": "object"
+        },
+        "RuleProposalSubmitOutcome": {
+          "enum": [
+            "evidence_recorded",
+            "proposal_created",
+            "suppressed_pending",
+            "duplicate_event",
+            "suppressed_approved",
+            "suppressed_rejected"
+          ],
+          "type": "string"
         },
         "ServerCapabilities": {
           "properties": {

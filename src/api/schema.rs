@@ -7,6 +7,7 @@ pub mod integrations;
 pub mod panes;
 pub mod plugins;
 pub mod response;
+pub mod review_agent;
 pub mod server;
 pub mod session;
 pub mod tabs;
@@ -20,6 +21,7 @@ pub use integrations::*;
 pub use panes::*;
 pub use plugins::*;
 pub use response::*;
+pub use review_agent::*;
 pub use server::*;
 pub use session::*;
 pub use tabs::*;
@@ -203,6 +205,10 @@ pub enum Method {
     PluginPaneFocus(PluginPaneFocusParams),
     #[serde(rename = "plugin.pane.close")]
     PluginPaneClose(PluginPaneCloseParams),
+    #[serde(rename = "review.rule_proposal.submit")]
+    ReviewRuleProposalSubmit(RuleProposalSubmitParams),
+    #[serde(rename = "review.rule_proposal.list")]
+    ReviewRuleProposalList(RuleProposalListParams),
 }
 
 #[cfg(test)]

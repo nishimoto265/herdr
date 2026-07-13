@@ -85,6 +85,7 @@ mod raw_input;
 mod release_notes;
 mod remote;
 mod render_prof;
+mod review_agent;
 mod selection;
 mod server;
 mod session;

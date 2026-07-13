@@ -17,6 +17,7 @@ mod integration;
 mod notification;
 mod pane;
 mod plugin;
+mod review;
 mod runtime;
 mod server;
 mod spec;
@@ -73,6 +74,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "terminal" => run_terminal_command(&args[2..])?,
         "pane" => pane::run_pane_command(&args[2..])?,
         "plugin" => plugin::run_plugin_command(&args[2..])?,
+        "review" => review::run_review_command(&args[2..])?,
         "wait" => run_wait_command(&args[2..])?,
         "integration" => integration::run_integration_command(&args[2..])?,
         "session" => run_session_command(&args[2..])?,
