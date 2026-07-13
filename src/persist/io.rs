@@ -45,7 +45,7 @@ pub(super) fn save_to_path(path: &Path, snapshot: &SessionSnapshot) -> std::io::
     save_json_to_path(path, snapshot)
 }
 
-fn save_json_to_path<T: serde::Serialize + ?Sized>(
+pub(super) fn save_json_to_path<T: serde::Serialize + ?Sized>(
     path: &Path,
     snapshot: &T,
 ) -> std::io::Result<()> {

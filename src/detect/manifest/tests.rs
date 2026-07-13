@@ -301,6 +301,40 @@ fn all_bundled_manifests_parse_and_validate() {
 }
 
 #[test]
+fn input_prompt_visibility_uses_live_codex_and_claude_composers() {
+    assert!(input_prompt_visible(Agent::Codex, "status\n› ..."));
+    assert!(input_prompt_visible(
+        Agent::Claude,
+        "status\n────────────────────\n  ❯\n────────────────────\nfooter"
+    ));
+
+    assert!(!input_prompt_visible(Agent::Codex, "status only"));
+    assert!(!input_prompt_visible(
+        Agent::Codex,
+        "› old request\n• completed response"
+    ));
+    assert!(!input_prompt_visible(
+        Agent::Claude,
+        "status\n❯ historical selection"
+    ));
+    assert!(!input_prompt_visible(
+        Agent::Claude,
+        "status\n────────────────────\ncomposer without prompt\n────────────────────\nfooter"
+    ));
+}
+
+#[test]
+fn codex_startup_confirmation_requires_the_owned_directory_trust_prompt() {
+    let prompt = "Do you trust the contents of this directory?\n› 1. Yes, continue\n  2. No, quit\nPress enter to continue";
+    assert!(startup_confirmation_visible(Agent::Codex, prompt));
+    assert!(!startup_confirmation_visible(Agent::Claude, prompt));
+    assert!(!startup_confirmation_visible(
+        Agent::Codex,
+        "Do you trust the contents of this directory?"
+    ));
+}
+
+#[test]
 fn devin_manifest_detects_idle_working_and_blocked_states() {
     let idle = explain(
         Agent::Devin,

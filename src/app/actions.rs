@@ -2765,6 +2765,9 @@ impl AppState {
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
             AppEvent::PluginCommandFinished { .. } => Vec::new(),
+            AppEvent::ReviewTranscriptResolved { .. } | AppEvent::ReviewCompletionProbed { .. } => {
+                Vec::new()
+            }
         }
     }
 
@@ -2795,7 +2798,18 @@ impl AppState {
                 terminal.last_agent_state_change_seq = Some(self.next_agent_state_change_seq);
             }
         }
-        let seen = self.apply_pane_state_change(ws_idx, pane_id, &change)?;
+        // Backside transitions are internal runtime facts. Return them through
+        // the same PaneStateUpdate path as front panes so Review Agent delivery
+        // observes each effective transition exactly once, but do not project
+        // them into front-pane seen/toast/notification state.
+        let seen = if self.workspaces[ws_idx]
+            .front_pane_for_backside(pane_id)
+            .is_some()
+        {
+            previous_seen
+        } else {
+            self.apply_pane_state_change(ws_idx, pane_id, &change)?
+        };
         let update = PaneStateUpdate {
             pane_id,
             ws_idx,
@@ -5458,7 +5472,9 @@ mod tests {
             observed_at: std::time::Instant::now(),
         });
 
-        assert!(updates.is_empty());
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].pane_id, back_id);
+        assert_eq!(updates[0].state, AgentState::Blocked);
         assert!(state.pending_agent_notifications.is_empty());
         assert!(state.toast.is_none());
         assert_eq!(

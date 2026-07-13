@@ -1,8 +1,8 @@
 mod model;
 mod transition;
+pub(crate) mod conversation;
+pub(crate) mod delivery;
 
-// Transcript association and backend startup consume these identifiers in a later slice; defining
-// them now keeps provider, backend profile, and rule target concepts distinct in the core model.
 pub use model::{
     ActiveRule, ReviewBackendProfileId, RuleProposal, RuleProposalChange, RuleProposalDecision,
     RuleProposalDecisionRequest, RuleProposalId, RuleProposalStatus, RuleProposalSubmission,

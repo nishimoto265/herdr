@@ -10,6 +10,7 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "keys",
     "onboarding",
     "remote",
+    "review_agent",
     "session",
     "terminal",
     "theme",

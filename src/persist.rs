@@ -8,6 +8,7 @@ mod io;
 pub mod plugin_registry;
 mod restore;
 pub(crate) mod review_agent;
+pub(crate) mod review_delivery;
 mod snapshot;
 
 pub use self::io::{clear, clear_history, load, load_history, save};

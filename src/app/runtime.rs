@@ -199,6 +199,11 @@ impl App {
         let mut changed = false;
         let mut resized = false;
 
+        self.submit_due_review_prompts(now);
+        self.retry_pending_review_actions();
+        self.retry_failed_review_backends(now);
+        self.reconcile_review_backend_readiness(now);
+
         self.sync_animation_timer(now);
 
         if now >= self.next_resize_poll {
@@ -295,7 +300,7 @@ impl App {
             let previous_toast = self.state.toast.clone();
             for update in self.state.expire_agent_metadata_at(deadline, now) {
                 self.refresh_new_herdr_toast_context_for_update(&update, &previous_toast);
-                self.emit_pane_state_update(&update);
+                self.process_pane_state_update(&update);
             }
             self.sync_agent_metadata_deadline();
             changed = true;
@@ -566,6 +571,7 @@ impl App {
             self.session_save_deadline,
             self.selection_autoscroll_deadline,
             self.selection_highlight_clear_deadline,
+            self.next_review_prompt_submit_deadline(),
             render_deadline,
         ]
         .into_iter()
