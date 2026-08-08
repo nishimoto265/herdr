@@ -692,14 +692,14 @@ fn render_pane_backside_badges(
             .saturating_add(info.rect.width)
             .min(area.x.saturating_add(area.width));
         let y = info.rect.y;
-        let rail = app.view.review_panel_rail_rect;
-        if rail.width > 0
-            && y >= rail.y
-            && y < rail.y.saturating_add(rail.height)
-            && rail.x < right
-            && rail.x.saturating_add(rail.width) > info.rect.x
+        let handle = app.view.review_panel_handle_rect;
+        if handle.width > 0
+            && y >= handle.y
+            && y < handle.y.saturating_add(handle.height)
+            && handle.x < right
+            && handle.x.saturating_add(handle.width) > info.rect.x
         {
-            right = right.min(rail.x);
+            right = right.min(handle.x);
         }
         if y < area.y
             || y >= area.y.saturating_add(area.height)
@@ -1194,7 +1194,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_single_pane_backside_badge_stays_visible_beside_review_rail() {
+    fn retained_single_pane_backside_badge_stays_at_right_of_top_pane_chrome() {
         let mut app = AppState::test_new();
         app.mode = Mode::Terminal;
         let mut ws = Workspace::test_new("test");
@@ -1212,10 +1212,15 @@ mod tests {
             crate::kitty_graphics::HostCellSize::default(),
         );
         let pane = app.view.pane_infos.first().unwrap();
-        let rail = app.view.review_panel_rail_rect;
+        let handle = app.view.review_panel_handle_rect;
         assert!(pane.borders.is_empty());
-        assert!(rail.width > 0);
-        let badge_x = rail.x.saturating_sub(5);
+        assert!(handle.width > 0);
+        assert_ne!(handle.y, pane.rect.y);
+        let badge_x = pane
+            .rect
+            .x
+            .saturating_add(pane.rect.width)
+            .saturating_sub(5);
         assert_eq!(buffer[(badge_x, pane.rect.y)].symbol(), "B");
         assert_eq!(
             buffer[(badge_x, pane.rect.y)].style().bg,

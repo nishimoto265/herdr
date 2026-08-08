@@ -13,15 +13,22 @@ use crate::review_agent::{RuleProposalDecision, RuleProposalDecisionRequest, Rul
 
 pub(crate) const REVIEW_PANEL_EXPANDED_WIDTH: u16 = 40;
 pub(crate) const REVIEW_PANEL_MIN_WIDTH: u16 = 36;
-pub(crate) const REVIEW_PANEL_RAIL_WIDTH: u16 = 3;
+/// Display width of the widest collapsed label, `[‹ Rules 99+]`.
+pub(crate) const REVIEW_PANEL_HANDLE_WIDTH: u16 = 13;
 pub(crate) const REVIEW_PANEL_MIN_TERMINAL_WIDTH: u16 = 30;
-const REVIEW_CARD_MIN_HEIGHT: usize = 9;
+/// `RULE` label and the blank line under it.
+const REVIEW_CARD_HEADER_ROWS: usize = 2;
+/// Blank, `ASSIGNED AGENT`, its value, blank, and the decision row, pinned to the body bottom so
+/// the buttons stay visible and clickable no matter how far the rule text scrolls.
+const REVIEW_CARD_FOOTER_ROWS: usize = 5;
+/// Conventional profile id of the bundled review agent. `review_agent.backend_profile_id` has no
+/// default, so any other configured id is shown verbatim.
+const REVIEW_AGENT_PROFILE_ID: &str = "review-agent";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ReviewCardLayout {
-    top: usize,
-    height: usize,
     rule_lines: usize,
+    rule_viewport: usize,
     target_offset: usize,
     button_offset: usize,
 }
@@ -30,7 +37,7 @@ struct ReviewCardLayout {
 pub(crate) struct ReviewPanelLayout {
     pub terminal_rect: Rect,
     pub panel_rect: Rect,
-    pub rail_rect: Rect,
+    pub handle_rect: Rect,
     pub overlay: bool,
 }
 
@@ -44,17 +51,24 @@ pub(crate) fn compute_review_panel_layout(
     }
 
     if !expanded {
-        let rail_width = REVIEW_PANEL_RAIL_WIDTH.min(area.width);
-        let rail_rect = Rect::new(
-            area.x.saturating_add(area.width.saturating_sub(rail_width)),
-            area.y,
-            rail_width,
-            area.height,
+        let handle_width = REVIEW_PANEL_HANDLE_WIDTH.min(area.width);
+        // `area` still carries the tab bar row here, so keep the handle off it or the handle would
+        // swallow clicks meant for the tab controls.
+        let mut center_offset = area.height.saturating_sub(1) / 2;
+        if area.height > 1 {
+            center_offset = center_offset.max(1);
+        }
+        let handle_rect = Rect::new(
+            area.x
+                .saturating_add(area.width.saturating_sub(handle_width)),
+            area.y.saturating_add(center_offset),
+            handle_width,
+            1,
         );
         return ReviewPanelLayout {
             terminal_rect: area,
             panel_rect: Rect::default(),
-            rail_rect,
+            handle_rect,
             overlay: true,
         };
     }
@@ -74,7 +88,7 @@ pub(crate) fn compute_review_panel_layout(
                 panel_width,
                 area.height,
             ),
-            rail_rect: Rect::default(),
+            handle_rect: Rect::default(),
             overlay: false,
         };
     }
@@ -98,7 +112,7 @@ pub(crate) fn compute_review_panel_layout(
             panel_width,
             panel_height,
         ),
-        rail_rect: Rect::default(),
+        handle_rect: Rect::default(),
         overlay: true,
     }
 }
@@ -118,98 +132,107 @@ pub(crate) fn compute_review_panel_hit_areas(
     );
     let close = Rect::new(
         inner.x.saturating_add(inner.width.saturating_sub(3)),
-        inner.y,
+        panel_rect.y,
         3.min(inner.width),
         1,
     );
     let body_y = inner.y.saturating_add(2);
-    let body_bottom = inner.y.saturating_add(inner.height);
     let mut decisions = Vec::new();
-    for (proposal, card) in panel
-        .proposals
-        .iter()
-        .zip(review_card_layouts(panel, panel_rect.width))
-    {
-        let screen_y = i64::from(body_y)
-            .saturating_add(saturating_i64(card.top))
-            .saturating_sub(saturating_i64(panel.scroll));
-        let button_y = screen_y.saturating_add(saturating_i64(card.button_offset));
-        if button_y < i64::from(body_y) || button_y >= i64::from(body_bottom) {
-            continue;
-        }
-        let button_y = button_y as u16;
-        let gap = 1;
-        let button_width = inner.width.saturating_sub(gap) / 2;
-        let reject = Rect::new(inner.x, button_y, button_width, 1);
-        let approve = Rect::new(
-            inner.x.saturating_add(button_width).saturating_add(gap),
-            button_y,
-            inner.width.saturating_sub(button_width).saturating_sub(gap),
-            1,
-        );
-        for (rect, decision) in [
-            (reject, RuleProposalDecision::Reject),
-            (approve, RuleProposalDecision::Approve),
-        ] {
-            decisions.push(ReviewDecisionHitArea {
-                rect,
-                request: RuleProposalDecisionRequest {
-                    proposal_id: RuleProposalId::new(&proposal.proposal_id),
-                    expected_revision: proposal.revision,
-                    decision,
-                },
-            });
+    if let (Some(proposal), Some(card)) = (
+        panel.proposals.get(panel.selected),
+        selected_review_card_layout(panel, panel_rect),
+    ) {
+        if review_panel_body_height(panel_rect) > 0 {
+            let button_y = body_y.saturating_add(saturating_u16(card.button_offset));
+            let gap = 1;
+            let button_width = inner.width.saturating_sub(gap) / 2;
+            let reject = Rect::new(inner.x, button_y, button_width, 1);
+            let approve = Rect::new(
+                inner.x.saturating_add(button_width).saturating_add(gap),
+                button_y,
+                inner.width.saturating_sub(button_width).saturating_sub(gap),
+                1,
+            );
+            for (rect, decision) in [
+                (reject, RuleProposalDecision::Reject),
+                (approve, RuleProposalDecision::Approve),
+            ] {
+                decisions.push(ReviewDecisionHitArea {
+                    rect,
+                    request: RuleProposalDecisionRequest {
+                        proposal_id: RuleProposalId::new(&proposal.proposal_id),
+                        expected_revision: proposal.revision,
+                        decision,
+                    },
+                });
+            }
         }
     }
     ReviewPanelHitAreas { close, decisions }
 }
 
 pub(crate) fn max_review_panel_scroll(panel: &ReviewPanelState, panel_rect: Rect) -> usize {
-    let body_height = panel_rect.height.saturating_sub(4) as usize;
-    review_card_layouts(panel, panel_rect.width)
-        .last()
-        .map(|card| card.top.saturating_add(card.height))
-        .unwrap_or(0)
-        .saturating_sub(body_height)
-}
-
-pub(crate) fn selected_review_card_scroll(panel: &ReviewPanelState, panel_rect: Rect) -> usize {
-    review_card_layouts(panel, panel_rect.width)
-        .get(panel.selected)
-        .map(|card| card.top)
+    selected_review_card_layout(panel, panel_rect)
+        .filter(|card| card.rule_viewport > 0)
+        .map(|card| card.rule_lines.saturating_sub(card.rule_viewport))
         .unwrap_or(0)
 }
 
 pub(crate) fn review_panel_page_height(panel_rect: Rect) -> usize {
-    panel_rect.height.saturating_sub(4).max(1) as usize
+    review_rule_viewport_height(panel_rect).max(1)
+}
+
+/// ratatui draws block titles left, then center, then right, so each one overdraws the previous.
+/// The centered position is dropped when `[›]` would clip it, and the left heading is shortened
+/// until it stops before whatever follows it.
+fn heading_for_title_width(panel_width: u16, position_len: usize) -> &'static str {
+    let title_width = usize::from(panel_width.saturating_sub(2));
+    let next_label_start = if position_shown(panel_width, position_len) {
+        title_width.saturating_sub(position_len) / 2
+    } else {
+        title_width.saturating_sub(3)
+    };
+    ["Rule proposals", "Rules"]
+        .into_iter()
+        .find(|heading| heading.len() < next_label_start)
+        .unwrap_or("")
+}
+
+fn position_shown(panel_width: u16, position_len: usize) -> bool {
+    if position_len == 0 {
+        return false;
+    }
+    let title_width = usize::from(panel_width.saturating_sub(2));
+    let start = title_width.saturating_sub(position_len) / 2;
+    start.saturating_add(position_len) < title_width.saturating_sub(3)
 }
 
 pub(super) fn render_review_panel(app: &AppState, frame: &mut Frame) {
     let panel = &app.review_panel;
     let p = &app.palette;
     let panel_rect = app.view.review_panel_rect;
-    let rail_rect = app.view.review_panel_rail_rect;
+    let handle_rect = app.view.review_panel_handle_rect;
 
-    if rail_rect.width > 0 && rail_rect.height > 0 {
+    if handle_rect.width > 0 && handle_rect.height > 0 {
         let pending = panel.proposals.len();
-        let badge = if pending > 99 {
-            "99+".to_string()
+        let label = if pending == 0 {
+            "[‹ Rules]".to_string()
+        } else if pending > 99 {
+            "[‹ Rules 99+]".to_string()
         } else {
-            pending.to_string()
+            format!("[‹ Rules {pending}]")
         };
-        let rail = Paragraph::new(vec![
-            Line::from(Span::styled(" R ", Style::default().fg(p.mauve))),
-            Line::from(Span::styled(
-                format!("{badge:^3}"),
+        // Pad to the full rect so every cell is painted: the headless retained path treats
+        // handle_rect as an overlay and skips it when patching pane output, so any cell the label
+        // does not cover would keep stale terminal content.
+        let label = format!("{label:>width$}", width = usize::from(handle_rect.width));
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                label,
                 Style::default().fg(if pending > 0 { p.yellow } else { p.overlay0 }),
             )),
-        ])
-        .block(
-            Block::default()
-                .borders(Borders::LEFT)
-                .border_style(Style::default().fg(p.surface1)),
+            handle_rect,
         );
-        frame.render_widget(rail, rail_rect);
     }
 
     if panel_rect.width == 0 || panel_rect.height == 0 {
@@ -223,13 +246,34 @@ pub(super) fn render_review_panel(app: &AppState, frame: &mut Frame) {
     } else {
         Style::default().fg(p.surface1)
     };
+    let position = if panel.proposals.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{} / {}",
+            panel.selected.saturating_add(1),
+            panel.proposals.len()
+        )
+    };
+    let position = if position_shown(panel_rect.width, position.chars().count()) {
+        position
+    } else {
+        String::new()
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
-        .title(Span::styled(
-            format!(" Rule proposals ({}) ", panel.proposals.len()),
-            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
-        ));
+        .title_top(
+            Line::from(Span::styled(
+                heading_for_title_width(panel_rect.width, position.chars().count()),
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ))
+            .left_aligned(),
+        )
+        .title_top(Line::from(Span::styled(position, Style::default().fg(p.overlay1))).centered())
+        .title_top(
+            Line::from(Span::styled("[›]", Style::default().fg(p.overlay1))).right_aligned(),
+        );
     frame.render_widget(block, panel_rect);
 
     let inner = Rect::new(
@@ -245,10 +289,6 @@ pub(super) fn render_review_panel(app: &AppState, frame: &mut Frame) {
         Paragraph::new(Span::styled("Review Agent", Style::default().fg(p.mauve))),
         inner,
     );
-    frame.render_widget(
-        Paragraph::new(Span::styled("[×]", Style::default().fg(p.overlay1))),
-        app.view.review_panel_hit_areas.close,
-    );
 
     let body = Rect::new(
         inner.x,
@@ -258,21 +298,28 @@ pub(super) fn render_review_panel(app: &AppState, frame: &mut Frame) {
     );
     if panel.proposals.is_empty() {
         frame.render_widget(
-            Paragraph::new("No pending proposals")
-                .style(Style::default().fg(p.overlay0))
-                .wrap(Wrap { trim: true }),
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "No pending rules",
+                    Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "New proposals will appear here.",
+                    Style::default().fg(p.overlay0),
+                )),
+            ])
+            .wrap(Wrap { trim: true }),
             body,
         );
         return;
     }
 
-    for (idx, (proposal, card)) in panel
-        .proposals
-        .iter()
-        .zip(review_card_layouts(panel, panel_rect.width))
-        .enumerate()
-    {
-        render_card(app, frame, body, idx, proposal, card);
+    if let (Some(proposal), Some(card)) = (
+        panel.proposals.get(panel.selected),
+        selected_review_card_layout(panel, panel_rect),
+    ) {
+        render_card(app, frame, body, proposal, card);
     }
 }
 
@@ -280,88 +327,78 @@ fn render_card(
     app: &AppState,
     frame: &mut Frame,
     body: Rect,
-    idx: usize,
     proposal: &RuleProposalView,
     layout: ReviewCardLayout,
 ) {
     let panel = &app.review_panel;
     let p = &app.palette;
-    let screen_y = i64::from(body.y)
-        .saturating_add(saturating_i64(layout.top))
-        .saturating_sub(saturating_i64(panel.scroll));
-    if screen_y.saturating_add(saturating_i64(layout.height)) <= i64::from(body.y)
-        || screen_y >= i64::from(body.y.saturating_add(body.height))
-    {
-        return;
-    }
-    let Some(card) = clipped_vertical_rect(
-        body.x,
-        screen_y,
-        body.width,
-        saturating_u16(layout.height),
-        body,
-    ) else {
-        return;
-    };
-    let selected = panel.selected == idx;
-    if screen_y >= i64::from(body.y) {
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(Style::default().fg(if selected { p.accent } else { p.surface0 })),
-            card,
-        );
-    }
     let content_x = body.x.saturating_add(1);
     let content_width = body.width.saturating_sub(2);
-    if let Some(rule_rect) = clipped_vertical_rect(
-        content_x,
-        screen_y.saturating_add(1),
-        content_width,
-        saturating_u16(layout.rule_lines),
-        body,
-    ) {
-        let hidden_rule_lines = i64::from(rule_rect.y)
-            .saturating_sub(screen_y.saturating_add(1))
-            .max(0);
+    // The footer offsets saturate together once the body cannot hold every row, so each label is
+    // drawn only while it still sits above the row below it. The decision row always wins.
+    let show_rule_label = layout.target_offset > 0;
+    let show_target_label = layout.target_offset < layout.button_offset;
+    let show_target_value = layout.target_offset.saturating_add(1) < layout.button_offset;
+    if let Some(label_rect) =
+        card_row_rect(body, 0, content_x, content_width).filter(|_| show_rule_label)
+    {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "RULE",
+                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+            )),
+            label_rect,
+        );
+    }
+    if layout.rule_viewport > 0 {
         frame.render_widget(
             Paragraph::new(proposal.rule_text.as_str())
                 .style(Style::default().fg(p.text))
                 .wrap(Wrap { trim: true })
-                .scroll((u16::try_from(hidden_rule_lines).unwrap_or(u16::MAX), 0)),
-            rule_rect,
+                .scroll((u16::try_from(panel.scroll).unwrap_or(u16::MAX), 0)),
+            Rect::new(
+                content_x,
+                body.y
+                    .saturating_add(saturating_u16(REVIEW_CARD_HEADER_ROWS)),
+                content_width,
+                saturating_u16(layout.rule_viewport),
+            ),
         );
     }
-    if let Some(target_rect) = clipped_vertical_rect(
-        content_x,
-        screen_y.saturating_add(saturating_i64(layout.target_offset)),
-        content_width,
-        1,
-        body,
-    ) {
+    if let Some(target_rect) = card_row_rect(body, layout.target_offset, content_x, content_width)
+        .filter(|_| show_target_label)
+    {
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Target  ", Style::default().fg(p.overlay0)),
-                Span::styled(
-                    proposal.target_profile_id.as_str(),
-                    Style::default().fg(p.mauve),
-                ),
-            ])),
+            Paragraph::new(Span::styled(
+                "ASSIGNED AGENT",
+                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+            )),
             target_rect,
         );
     }
-    let hits = compute_review_panel_hit_areas(panel, app.view.review_panel_rect);
-    for hit in hits
-        .decisions
-        .iter()
-        .filter(|hit| hit.request.proposal_id.as_str() == proposal.proposal_id)
+    if let Some(target_value_rect) = card_row_rect(
+        body,
+        layout.target_offset.saturating_add(1),
+        content_x,
+        content_width,
+    )
+    .filter(|_| show_target_value)
     {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                assigned_agent_label(&proposal.target_profile_id),
+                Style::default().fg(p.mauve),
+            )),
+            target_value_rect,
+        );
+    }
+    for hit in app.view.review_panel_hit_areas.decisions.iter() {
         let (label, color) = match hit.request.decision {
-            RuleProposalDecision::Reject => ("Reject", p.red),
-            RuleProposalDecision::Approve => ("Approve", p.green),
+            RuleProposalDecision::Reject => ("[ R  Reject ]", p.red),
+            RuleProposalDecision::Approve => ("[ A  Approve ]", p.green),
         };
         frame.render_widget(
-            Paragraph::new(format!("[ {label} ]"))
+            Paragraph::new(label)
                 .alignment(ratatui::layout::Alignment::Center)
                 .style(Style::default().fg(color)),
             hit.rect,
@@ -369,53 +406,69 @@ fn render_card(
     }
 }
 
-fn review_card_layouts(panel: &ReviewPanelState, panel_width: u16) -> Vec<ReviewCardLayout> {
-    let text_width = panel_width.saturating_sub(4).max(1);
-    let mut top = 0usize;
-    panel
-        .proposals
-        .iter()
-        .map(|proposal| {
-            let rule_lines = Paragraph::new(proposal.rule_text.as_str())
-                .wrap(Wrap { trim: true })
-                .line_count(text_width)
-                .max(1);
-            let height = rule_lines.saturating_add(4).max(REVIEW_CARD_MIN_HEIGHT);
-            let card = ReviewCardLayout {
-                top,
-                height,
-                rule_lines,
-                target_offset: height.saturating_sub(3),
-                button_offset: height.saturating_sub(2),
-            };
-            top = top.saturating_add(height);
-            card
-        })
-        .collect()
+fn assigned_agent_label(target_profile_id: &str) -> &str {
+    if target_profile_id == REVIEW_AGENT_PROFILE_ID {
+        "Review Agent"
+    } else {
+        target_profile_id
+    }
 }
 
-fn saturating_i64(value: usize) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
+fn review_panel_body_height(panel_rect: Rect) -> usize {
+    usize::from(panel_rect.height.saturating_sub(4))
+}
+
+fn review_rule_viewport_height(panel_rect: Rect) -> usize {
+    review_panel_body_height(panel_rect)
+        .saturating_sub(REVIEW_CARD_HEADER_ROWS)
+        .saturating_sub(REVIEW_CARD_FOOTER_ROWS)
+}
+
+fn selected_review_card_layout(
+    panel: &ReviewPanelState,
+    panel_rect: Rect,
+) -> Option<ReviewCardLayout> {
+    let text_width = panel_rect.width.saturating_sub(4).max(1);
+    let proposal = panel.proposals.get(panel.selected)?;
+    let rule_lines = Paragraph::new(proposal.rule_text.as_str())
+        .wrap(Wrap { trim: true })
+        .line_count(text_width)
+        .max(1);
+    let body_height = review_panel_body_height(panel_rect);
+    Some(ReviewCardLayout {
+        rule_lines,
+        rule_viewport: review_rule_viewport_height(panel_rect),
+        target_offset: body_height.saturating_sub(4),
+        button_offset: body_height.saturating_sub(1),
+    })
+}
+
+fn card_row_rect(body: Rect, offset: usize, x: u16, width: u16) -> Option<Rect> {
+    let offset = saturating_u16(offset);
+    (offset < body.height).then(|| Rect::new(x, body.y.saturating_add(offset), width, 1))
 }
 
 fn saturating_u16(value: usize) -> u16 {
     u16::try_from(value).unwrap_or(u16::MAX)
 }
 
-fn clipped_vertical_rect(x: u16, y: i64, width: u16, height: u16, clip: Rect) -> Option<Rect> {
-    let start = y.max(i64::from(clip.y));
-    let end = y
-        .saturating_add(i64::from(height))
-        .min(i64::from(clip.y.saturating_add(clip.height)));
-    if start >= end {
-        return None;
-    }
-    Some(Rect::new(x, start as u16, width, (end - start) as u16))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn render_buffer(app: &AppState, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                .expect("test terminal");
+        terminal
+            .draw(|frame| render_review_panel(app, frame))
+            .expect("render review panel");
+        terminal.backend().buffer().clone()
+    }
+
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer.content().iter().map(|cell| cell.symbol()).collect()
+    }
 
     fn proposal(id: &str, revision: u64) -> RuleProposalView {
         RuleProposalView {
@@ -468,6 +521,35 @@ mod tests {
     }
 
     #[test]
+    fn replacing_selected_proposal_resets_its_scroll() {
+        let mut panel = ReviewPanelState::default();
+        panel.replace_proposals(vec![proposal("one", 1), proposal("two", 1)]);
+        panel.scroll = 5;
+
+        panel.replace_proposals(vec![proposal("two", 1)]);
+
+        assert_eq!(panel.selected, 0);
+        assert_eq!(panel.scroll, 0);
+    }
+
+    #[test]
+    fn a_surviving_selection_follows_its_proposal_and_keeps_its_scroll() {
+        let mut panel = ReviewPanelState::default();
+        panel.replace_proposals(vec![proposal("one", 1), proposal("two", 1)]);
+        panel.selected = 1;
+        panel.scroll = 5;
+
+        panel.replace_proposals(vec![
+            proposal("zero", 1),
+            proposal("one", 1),
+            proposal("two", 1),
+        ]);
+
+        assert_eq!(panel.selected, 2);
+        assert_eq!(panel.scroll, 5);
+    }
+
+    #[test]
     fn docked_layout_keeps_terminal_and_panel_disjoint() {
         let layout = compute_review_panel_layout(Rect::new(20, 0, 100, 30), true, false);
         assert!(!layout.overlay);
@@ -493,23 +575,84 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_rail_overlays_without_resizing_terminal() {
+    fn collapsed_handle_is_local_and_does_not_resize_terminal() {
         let area = Rect::new(26, 0, 74, 24);
         let layout = compute_review_panel_layout(area, false, false);
         assert_eq!(layout.terminal_rect, area);
-        assert_eq!(layout.rail_rect.width, REVIEW_PANEL_RAIL_WIDTH);
+        assert_eq!(layout.handle_rect.width, REVIEW_PANEL_HANDLE_WIDTH);
+        assert_eq!(layout.handle_rect.height, 1);
+        assert_eq!(layout.handle_rect.y, area.y + (area.height - 1) / 2);
         assert_eq!(
-            layout.rail_rect.x + layout.rail_rect.width,
+            layout.handle_rect.x + layout.handle_rect.width,
             area.x + area.width
         );
+    }
+
+    #[test]
+    fn a_collapsed_handle_never_lands_on_the_tab_bar_row() {
+        for height in 2..=6u16 {
+            let area = Rect::new(26, 4, 74, height);
+            let layout = compute_review_panel_layout(area, false, false);
+            assert!(
+                layout.handle_rect.y > area.y,
+                "height {height} put the handle on the tab bar row"
+            );
+        }
+        let single_row = Rect::new(26, 4, 74, 1);
+        let layout = compute_review_panel_layout(single_row, false, false);
+        assert_eq!(layout.handle_rect.y, single_row.y);
+    }
+
+    #[test]
+    fn collapsed_handles_render_pending_count_and_dim_empty_label() {
+        let mut app = AppState::test_new();
+        app.view.review_panel_handle_rect = Rect::new(27, 0, 13, 1);
+        app.review_panel
+            .replace_proposals(vec![proposal("one", 1), proposal("two", 1)]);
+
+        let pending = render_buffer(&app, 40, 5);
+        assert!(buffer_text(&pending).contains("[‹ Rules 2]"));
+        assert_eq!(pending[(29, 0)].style().fg, Some(app.palette.yellow));
+
+        app.review_panel.replace_proposals(Vec::new());
+        let empty = render_buffer(&app, 40, 5);
+        assert!(buffer_text(&empty).contains("[‹ Rules]"));
+        assert!(!buffer_text(&empty).contains("[‹ Rules 0]"));
+        assert_eq!(empty[(31, 0)].style().fg, Some(app.palette.overlay0));
+    }
+
+    #[test]
+    fn collapsed_handle_fits_the_capped_pending_count() {
+        let mut app = AppState::test_new();
+        app.view.review_panel_handle_rect = Rect::new(0, 0, REVIEW_PANEL_HANDLE_WIDTH, 1);
+        app.review_panel.replace_proposals(
+            (0..100)
+                .map(|idx| proposal(&format!("proposal-{idx}"), 1))
+                .collect(),
+        );
+
+        let content = buffer_text(&render_buffer(&app, REVIEW_PANEL_HANDLE_WIDTH, 1));
+        assert_eq!(content, "[‹ Rules 99+]");
+    }
+
+    #[test]
+    fn a_short_handle_label_still_paints_every_cell_of_its_rect() {
+        let mut app = AppState::test_new();
+        app.view.review_panel_handle_rect = Rect::new(0, 0, REVIEW_PANEL_HANDLE_WIDTH, 1);
+        app.review_panel.replace_proposals(Vec::new());
+
+        let content = buffer_text(&render_buffer(&app, REVIEW_PANEL_HANDLE_WIDTH, 1));
+        assert_eq!(content, "    [‹ Rules]");
     }
 
     #[test]
     fn decision_hit_areas_preserve_id_revision_and_do_not_overlap() {
         let mut panel = ReviewPanelState::default();
         panel.replace_proposals(vec![proposal("one", 7)]);
-        let hits = compute_review_panel_hit_areas(&panel, Rect::new(80, 0, 40, 20));
+        let panel_rect = Rect::new(80, 3, 40, 20);
+        let hits = compute_review_panel_hit_areas(&panel, panel_rect);
         assert_eq!(hits.decisions.len(), 2);
+        assert_eq!(hits.close.y, panel_rect.y);
         assert_eq!(hits.decisions[0].request.proposal_id.as_str(), "one");
         assert_eq!(hits.decisions[0].request.expected_revision, 7);
         let left = hits.decisions[0].rect;
@@ -518,37 +661,145 @@ mod tests {
     }
 
     #[test]
-    fn scrolled_card_hit_areas_follow_document_offset() {
+    fn decision_hit_areas_only_target_selected_proposal() {
         let mut panel = ReviewPanelState::default();
         panel.replace_proposals(vec![proposal("one", 1), proposal("two", 1)]);
-        panel.scroll = 6;
+        panel.selected = 1;
         let hits = compute_review_panel_hit_areas(&panel, Rect::new(80, 0, 40, 20));
-        let first = hits
+        assert_eq!(hits.decisions.len(), 2);
+        assert!(hits
             .decisions
             .iter()
-            .find(|hit| hit.request.proposal_id.as_str() == "one")
-            .expect("first card remains partially visible");
-        let second = hits
-            .decisions
-            .iter()
-            .find(|hit| hit.request.proposal_id.as_str() == "two")
-            .expect("second card is visible");
-        assert_eq!(first.rect.y, 4);
-        assert_eq!(second.rect.y, 13);
+            .all(|hit| hit.request.proposal_id.as_str() == "two"));
     }
 
     #[test]
-    fn vertical_clip_handles_cards_scrolled_above_origin() {
-        let clip = Rect::new(10, 3, 20, 10);
-        assert_eq!(
-            clipped_vertical_rect(10, -3, 20, 9, clip),
-            Some(Rect::new(10, 3, 20, 3))
+    fn expanded_panel_renders_only_selected_proposal_and_decision_colors() {
+        let mut app = AppState::test_new();
+        app.review_panel
+            .replace_proposals(vec![proposal("one", 4), proposal("two", 7)]);
+        app.review_panel.selected = 1;
+        app.view.review_panel_rect = Rect::new(0, 0, 40, 20);
+        app.view.review_panel_hit_areas =
+            compute_review_panel_hit_areas(&app.review_panel, app.view.review_panel_rect);
+
+        let buffer = render_buffer(&app, 40, 20);
+        let content = buffer_text(&buffer);
+        let top_row = (0..40).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+        let first_inner_row = (0..40).map(|x| buffer[(x, 1)].symbol()).collect::<String>();
+        assert!(content.contains("Rule proposals"));
+        assert!(content.contains("2 / 2"));
+        assert!(content.contains("[›]"));
+        assert!(top_row.contains("Rule proposals"));
+        assert!(top_row.contains("2 / 2"));
+        assert!(top_row.contains("[›]"));
+        assert_eq!(buffer[(1, 0)].symbol(), "R");
+        let close = app.view.review_panel_hit_areas.close;
+        assert_eq!(buffer[(close.x, close.y)].symbol(), "[");
+        assert!(first_inner_row.contains("Review Agent"));
+        assert!(!first_inner_row.contains("2 / 2"));
+        assert!(!first_inner_row.contains("[›]"));
+        assert!(content.contains("RULE"));
+        assert!(content.contains("Rule two"));
+        assert!(!content.contains("Rule one"));
+        assert!(content.contains("ASSIGNED AGENT"));
+        assert!(content.contains("[ R  Reject ]"));
+        assert!(content.contains("[ A  Approve ]"));
+
+        let reject = app
+            .view
+            .review_panel_hit_areas
+            .decisions
+            .iter()
+            .find(|hit| hit.request.decision == RuleProposalDecision::Reject)
+            .expect("reject hit")
+            .rect;
+        let approve = app
+            .view
+            .review_panel_hit_areas
+            .decisions
+            .iter()
+            .find(|hit| hit.request.decision == RuleProposalDecision::Approve)
+            .expect("approve hit")
+            .rect;
+        assert!((reject.x..reject.x + reject.width)
+            .any(|x| buffer[(x, reject.y)].style().fg == Some(app.palette.red)));
+        assert!((approve.x..approve.x + approve.width)
+            .any(|x| buffer[(x, approve.y)].style().fg == Some(app.palette.green)));
+        for rect in [reject, approve] {
+            for x in rect.x..rect.x.saturating_add(rect.width) {
+                let style = buffer[(x, rect.y)].style();
+                assert!(matches!(
+                    style.bg,
+                    None | Some(ratatui::style::Color::Reset)
+                ));
+                assert!(!style.add_modifier.contains(Modifier::REVERSED));
+            }
+        }
+    }
+
+    #[test]
+    fn minimum_expanded_width_keeps_header_labels_disjoint() {
+        let mut app = AppState::test_new();
+        app.review_panel.replace_proposals(
+            (0..100)
+                .map(|idx| proposal(&format!("proposal-{idx}"), 1))
+                .collect(),
         );
-        assert_eq!(clipped_vertical_rect(10, -9, 20, 6, clip), None);
+        app.review_panel.selected = 99;
+        app.view.review_panel_rect = Rect::new(0, 0, REVIEW_PANEL_MIN_WIDTH, 12);
+        app.view.review_panel_hit_areas =
+            compute_review_panel_hit_areas(&app.review_panel, app.view.review_panel_rect);
+
+        let buffer = render_buffer(&app, REVIEW_PANEL_MIN_WIDTH, 12);
+        let top_row = (0..REVIEW_PANEL_MIN_WIDTH)
+            .map(|x| buffer[(x, 0)].symbol())
+            .collect::<String>();
+        assert!(buffer_text(&buffer).contains("Review Agent"));
+        assert_eq!(top_row, "┌Rules───────100 / 100──────────[›]┐");
     }
 
     #[test]
-    fn long_rule_wraps_into_variable_card_and_moves_buttons_and_scroll_limit() {
+    fn header_heading_shrinks_only_when_the_position_would_overdraw_it() {
+        assert_eq!(
+            heading_for_title_width(REVIEW_PANEL_MIN_WIDTH, 0),
+            "Rule proposals"
+        );
+        assert_eq!(
+            heading_for_title_width(REVIEW_PANEL_EXPANDED_WIDTH, "1 / 9".len()),
+            "Rule proposals"
+        );
+        assert_eq!(
+            heading_for_title_width(REVIEW_PANEL_MIN_WIDTH, "100 / 100".len()),
+            "Rules"
+        );
+        // Width 12 drops the position entirely, which frees the left side for the short heading.
+        assert_eq!(heading_for_title_width(12, "10 / 10".len()), "Rules");
+        assert_eq!(heading_for_title_width(6, 0), "");
+    }
+
+    #[test]
+    fn a_position_that_the_chevron_would_clip_is_dropped() {
+        assert!(position_shown(REVIEW_PANEL_MIN_WIDTH, "100 / 100".len()));
+        assert!(!position_shown(16, "100 / 100".len()));
+        assert!(!position_shown(REVIEW_PANEL_MIN_WIDTH, 0));
+    }
+
+    #[test]
+    fn manually_open_empty_panel_explains_where_rules_will_appear() {
+        let mut app = AppState::test_new();
+        app.review_panel.open_manually();
+        app.view.review_panel_rect = Rect::new(0, 0, 40, 12);
+        app.view.review_panel_hit_areas =
+            compute_review_panel_hit_areas(&app.review_panel, app.view.review_panel_rect);
+
+        let content = buffer_text(&render_buffer(&app, 40, 12));
+        assert!(content.contains("No pending rules"));
+        assert!(content.contains("New proposals will appear here."));
+    }
+
+    #[test]
+    fn narrow_wrapping_lengthens_the_rule_and_its_scroll_range() {
         let mut panel = ReviewPanelState::default();
         panel.replace_proposals(vec![RuleProposalView {
             proposal_id: "long".to_string(),
@@ -559,31 +810,64 @@ mod tests {
             revision: 3,
         }]);
 
-        let narrow = review_card_layouts(&panel, 20)[0];
-        let wide = review_card_layouts(&panel, 40)[0];
+        let narrow_rect = Rect::new(0, 0, 20, 24);
+        let wide_rect = Rect::new(0, 0, 40, 24);
+        let narrow = selected_review_card_layout(&panel, narrow_rect).expect("narrow layout");
+        let wide = selected_review_card_layout(&panel, wide_rect).expect("wide layout");
         assert!(narrow.rule_lines > wide.rule_lines);
-        assert!(narrow.height > wide.height);
-
-        let tall_rect = Rect::new(0, 0, 20, saturating_u16(narrow.height.saturating_add(6)));
-        let approve = compute_review_panel_hit_areas(&panel, tall_rect)
-            .decisions
-            .into_iter()
-            .find(|hit| hit.request.decision == RuleProposalDecision::Approve)
-            .expect("long rule approve button");
-        assert_eq!(
-            approve.rect.y,
-            3u16.saturating_add(saturating_u16(narrow.button_offset))
-        );
-
-        let viewport = Rect::new(0, 0, 20, 12);
-        assert_eq!(
-            max_review_panel_scroll(&panel, viewport),
-            narrow.height.saturating_sub(8)
+        assert_eq!(narrow.rule_viewport, wide.rule_viewport);
+        assert!(
+            max_review_panel_scroll(&panel, narrow_rect)
+                > max_review_panel_scroll(&panel, wide_rect)
         );
     }
 
     #[test]
-    fn scrolling_long_rule_renders_lines_hidden_above_viewport() {
+    fn decision_row_stays_pinned_to_the_body_bottom_for_a_rule_taller_than_the_viewport() {
+        let mut panel = ReviewPanelState::default();
+        panel.replace_proposals(vec![RuleProposalView {
+            proposal_id: "long".to_string(),
+            rule_text: "wrap this rule across several drawer lines. ".repeat(6),
+            target_profile_id: "review-agent".to_string(),
+            revision: 3,
+        }]);
+        let panel_rect = Rect::new(0, 0, 40, 12);
+        let card = selected_review_card_layout(&panel, panel_rect).expect("layout");
+        assert!(card.rule_lines > card.rule_viewport);
+        assert!(max_review_panel_scroll(&panel, panel_rect) > 0);
+
+        let hits = compute_review_panel_hit_areas(&panel, panel_rect);
+        assert_eq!(hits.decisions.len(), 2);
+        let body_bottom = panel_rect.y + panel_rect.height - 2;
+        for hit in &hits.decisions {
+            assert_eq!(hit.rect.y, body_bottom);
+        }
+    }
+
+    #[test]
+    fn a_rule_viewport_squeezed_to_nothing_reports_no_scroll_range() {
+        let mut panel = ReviewPanelState::default();
+        panel.replace_proposals(vec![RuleProposalView {
+            proposal_id: "long".to_string(),
+            rule_text: "wrap this rule across several drawer lines. ".repeat(6),
+            target_profile_id: "review-agent".to_string(),
+            revision: 3,
+        }]);
+        let panel_rect = Rect::new(0, 0, 40, 10);
+
+        let card = selected_review_card_layout(&panel, panel_rect).expect("layout");
+        assert_eq!(card.rule_viewport, 0);
+        assert_eq!(max_review_panel_scroll(&panel, panel_rect), 0);
+        assert_eq!(
+            compute_review_panel_hit_areas(&panel, panel_rect)
+                .decisions
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn scrolling_a_long_rule_hides_the_lines_above_the_viewport() {
         let mut app = AppState::test_new();
         app.review_panel.replace_proposals(vec![RuleProposalView {
             proposal_id: "scroll".to_string(),
@@ -591,24 +875,42 @@ mod tests {
             target_profile_id: "review-agent".to_string(),
             revision: 1,
         }]);
-        app.review_panel.scroll = 2;
-        app.view.review_panel_rect = Rect::new(0, 0, 40, 12);
+        app.view.review_panel_rect = Rect::new(0, 0, 40, 13);
+        app.review_panel.scroll =
+            max_review_panel_scroll(&app.review_panel, app.view.review_panel_rect);
         app.view.review_panel_hit_areas =
             compute_review_panel_hit_areas(&app.review_panel, app.view.review_panel_rect);
+        assert_eq!(app.review_panel.scroll, 1);
 
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| render_review_panel(&app, frame))
-            .expect("render review panel");
-        let content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let content = buffer_text(&render_buffer(&app, 40, 13));
         assert!(content.contains("MIDDLE"));
         assert!(content.contains("TAIL"));
+        assert!(!content.contains("HEAD"));
+    }
+
+    #[test]
+    fn a_body_too_short_for_every_row_still_keeps_the_decision_row() {
+        for panel_height in 5..=12u16 {
+            let mut app = AppState::test_new();
+            app.review_panel.replace_proposals(vec![proposal("one", 1)]);
+            app.view.review_panel_rect = Rect::new(0, 0, 40, panel_height);
+            app.view.review_panel_hit_areas =
+                compute_review_panel_hit_areas(&app.review_panel, app.view.review_panel_rect);
+
+            let buffer = render_buffer(&app, 40, panel_height);
+            let decision_row = (0..40)
+                .map(|x| buffer[(x, panel_height - 2)].symbol())
+                .collect::<String>();
+            assert!(
+                decision_row.contains("[ R  Reject ]") && decision_row.contains("[ A  Approve ]"),
+                "panel height {panel_height} lost the decision row: {decision_row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_default_profile_id_is_shown_verbatim() {
+        assert_eq!(assigned_agent_label("review-agent"), "Review Agent");
+        assert_eq!(assigned_agent_label("custom-reviewer"), "custom-reviewer");
     }
 }

@@ -49,7 +49,7 @@ use self::release_notes::{render_product_announcement_overlay, render_release_no
 use self::review_agent::render_review_panel;
 pub(crate) use self::review_agent::{
     compute_review_panel_hit_areas, compute_review_panel_layout, max_review_panel_scroll,
-    review_panel_page_height, selected_review_card_scroll,
+    review_panel_page_height,
 };
 pub(crate) use self::scrollbar::{
     pane_scrollbar_rect, release_notes_scrollbar_rect, scrollbar_offset_from_drag_row,
@@ -329,7 +329,7 @@ fn compute_view_internal(
         new_tab_hit_area: tab_bar_view.new_tab_hit_area,
         terminal_area,
         review_panel_rect: review_layout.panel_rect,
-        review_panel_rail_rect: review_layout.rail_rect,
+        review_panel_handle_rect: review_layout.handle_rect,
         review_panel_overlay: review_layout.overlay,
         review_panel_hit_areas,
         mobile_header_rect: Rect::default(),
@@ -412,7 +412,7 @@ fn compute_mobile_view(
         new_tab_hit_area: Rect::default(),
         terminal_area,
         review_panel_rect: review_layout.panel_rect,
-        review_panel_rail_rect: review_layout.rail_rect,
+        review_panel_handle_rect: review_layout.handle_rect,
         review_panel_overlay: review_layout.overlay,
         review_panel_hit_areas,
         mobile_header_rect: header_rect,

@@ -3205,7 +3205,7 @@ impl HeadlessServer {
         }
 
         let mut touched = false;
-        let mut overlay_rects = vec![self.app.state.view.review_panel_rail_rect];
+        let mut overlay_rects = vec![self.app.state.view.review_panel_handle_rect];
         if self.app.state.view.review_panel_overlay {
             overlay_rects.push(self.app.state.view.review_panel_rect);
         }

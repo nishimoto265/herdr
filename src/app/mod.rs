@@ -591,7 +591,7 @@ impl App {
                 new_tab_hit_area: Rect::default(),
                 terminal_area: Rect::default(),
                 review_panel_rect: Rect::default(),
-                review_panel_rail_rect: Rect::default(),
+                review_panel_handle_rect: Rect::default(),
                 review_panel_overlay: false,
                 review_panel_hit_areas: state::ReviewPanelHitAreas::default(),
                 mobile_header_rect: Rect::default(),
