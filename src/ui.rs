@@ -34,7 +34,7 @@ use self::menus::{
 use self::mobile::{
     compute_mobile_header_hit_areas, is_mobile_width, mobile_switcher_max_scroll_for_height,
     mobile_toast_banner_rect, render_mobile_header, render_mobile_panel,
-    render_mobile_toast_banner,
+    render_mobile_toast_banner, MIN_MOBILE_HEADER_CONTENT_WIDTH,
 };
 use self::navigator::render_navigator_overlay;
 pub(crate) use self::onboarding::onboarding_welcome_continue_rect;
@@ -49,7 +49,7 @@ use self::release_notes::{render_product_announcement_overlay, render_release_no
 use self::review_agent::render_review_panel;
 pub(crate) use self::review_agent::{
     compute_review_panel_hit_areas, compute_review_panel_layout, max_review_panel_scroll,
-    review_panel_page_height,
+    review_panel_handle_slot, review_panel_page_height,
 };
 pub(crate) use self::scrollbar::{
     pane_scrollbar_rect, release_notes_scrollbar_rect, scrollbar_offset_from_drag_row,
@@ -91,7 +91,7 @@ pub(crate) use self::{
         mobile_switcher_workspace_doc_range, MobileSwitcherTarget,
     },
     panes::{apply_pane_chrome, pane_inner_rect, pane_is_scrolled_back},
-    tabs::compute_tab_bar_view,
+    tabs::{compute_tab_bar_view, MIN_TAB_BAR_CONTENT_WIDTH},
     widgets::{centered_popup_rect, modal_stack_areas},
 };
 use crate::app::state::ViewLayout;
@@ -260,6 +260,12 @@ fn compute_view_internal(
         compute_workspace_card_areas(app, sidebar_area)
     };
 
+    let handle_slot = review_panel_handle_slot(
+        &app.review_panel,
+        tab_bar_rect,
+        MIN_TAB_BAR_CONTENT_WIDTH,
+        terminal_area,
+    );
     let tab_bar_view = app
         .active
         .and_then(|ws_idx| app.workspaces.get(ws_idx))
@@ -270,6 +276,7 @@ fn compute_view_internal(
                 app.tab_scroll,
                 app.tab_scroll_follow_active,
                 app.mouse_capture,
+                handle_slot.reserved_width,
             )
         })
         .unwrap_or_default();
@@ -329,7 +336,7 @@ fn compute_view_internal(
         new_tab_hit_area: tab_bar_view.new_tab_hit_area,
         terminal_area,
         review_panel_rect: review_layout.panel_rect,
-        review_panel_handle_rect: review_layout.handle_rect,
+        review_panel_handle_rect: handle_slot.rect,
         review_panel_overlay: review_layout.overlay,
         review_panel_hit_areas,
         mobile_header_rect: Rect::default(),
@@ -385,7 +392,13 @@ fn compute_mobile_view(
     if resize_panes {
         resize_background_tab_panes_to_area(app, terminal_runtimes, terminal_area, cell_size);
     }
-    let header_hits = compute_mobile_header_hit_areas(app, header_rect);
+    let handle_slot = review_panel_handle_slot(
+        &app.review_panel,
+        header_rect,
+        MIN_MOBILE_HEADER_CONTENT_WIDTH,
+        terminal_area,
+    );
+    let header_hits = compute_mobile_header_hit_areas(app, header_rect, handle_slot.reserved_width);
     let review_layout =
         compute_review_panel_layout(terminal_area, app.review_panel.is_expanded(), true);
     app.review_panel.scroll = app.review_panel.scroll.min(max_review_panel_scroll(
@@ -412,7 +425,7 @@ fn compute_mobile_view(
         new_tab_hit_area: Rect::default(),
         terminal_area,
         review_panel_rect: review_layout.panel_rect,
-        review_panel_handle_rect: review_layout.handle_rect,
+        review_panel_handle_rect: handle_slot.rect,
         review_panel_overlay: review_layout.overlay,
         review_panel_hit_areas,
         mobile_header_rect: header_rect,
@@ -713,9 +726,13 @@ mod tests {
         assert_eq!(app.view.mobile_header_rect, Rect::new(0, 0, 44, 2));
         assert_eq!(app.view.terminal_area, Rect::new(0, 2, 44, 18));
         assert_eq!(app.view.mobile_menu_hit_area.height, 2);
+        // The collapsed review handle owns the right end of the header, so the switch button sits
+        // just left of it.
+        let handle = app.view.review_panel_handle_rect;
+        assert_eq!(handle.x + handle.width, 44);
         assert_eq!(
             app.view.mobile_menu_hit_area.x + app.view.mobile_menu_hit_area.width,
-            44
+            handle.x
         );
     }
 

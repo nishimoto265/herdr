@@ -37,7 +37,6 @@ struct ReviewCardLayout {
 pub(crate) struct ReviewPanelLayout {
     pub terminal_rect: Rect,
     pub panel_rect: Rect,
-    pub handle_rect: Rect,
     pub overlay: bool,
 }
 
@@ -51,24 +50,9 @@ pub(crate) fn compute_review_panel_layout(
     }
 
     if !expanded {
-        let handle_width = REVIEW_PANEL_HANDLE_WIDTH.min(area.width);
-        // `area` still carries the tab bar row here, so keep the handle off it or the handle would
-        // swallow clicks meant for the tab controls.
-        let mut center_offset = area.height.saturating_sub(1) / 2;
-        if area.height > 1 {
-            center_offset = center_offset.max(1);
-        }
-        let handle_rect = Rect::new(
-            area.x
-                .saturating_add(area.width.saturating_sub(handle_width)),
-            area.y.saturating_add(center_offset),
-            handle_width,
-            1,
-        );
         return ReviewPanelLayout {
             terminal_rect: area,
             panel_rect: Rect::default(),
-            handle_rect,
             overlay: true,
         };
     }
@@ -88,7 +72,6 @@ pub(crate) fn compute_review_panel_layout(
                 panel_width,
                 area.height,
             ),
-            handle_rect: Rect::default(),
             overlay: false,
         };
     }
@@ -112,8 +95,57 @@ pub(crate) fn compute_review_panel_layout(
             panel_width,
             panel_height,
         ),
-        handle_rect: Rect::default(),
         overlay: true,
+    }
+}
+
+/// Where the collapsed handle goes, and how many columns its host chrome row loses to it.
+///
+/// Both come from one call so a row can never reserve columns the handle does not take, or lose
+/// the handle to a row that never made room.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ReviewPanelHandleSlot {
+    pub reserved_width: u16,
+    pub rect: Rect,
+}
+
+/// `chrome_min_content_width` is what the host row needs for its own controls. A row that cannot
+/// spare the handle keeps all of its columns and the handle falls back to the top row of
+/// `terminal_rect` — the only path where it overlaps terminal content.
+pub(crate) fn review_panel_handle_slot(
+    panel: &ReviewPanelState,
+    chrome_row: Rect,
+    chrome_min_content_width: u16,
+    terminal_rect: Rect,
+) -> ReviewPanelHandleSlot {
+    if panel.is_expanded() {
+        return ReviewPanelHandleSlot::default();
+    }
+    let chrome_fits = chrome_row.width > 0
+        && chrome_row.height > 0
+        && chrome_row.width >= REVIEW_PANEL_HANDLE_WIDTH.saturating_add(chrome_min_content_width);
+    let (host, reserved_width) = if chrome_fits {
+        (
+            Rect::new(chrome_row.x, chrome_row.y, chrome_row.width, 1),
+            REVIEW_PANEL_HANDLE_WIDTH,
+        )
+    } else if terminal_rect.width > 0 && terminal_rect.height > 0 {
+        (
+            Rect::new(terminal_rect.x, terminal_rect.y, terminal_rect.width, 1),
+            0,
+        )
+    } else {
+        return ReviewPanelHandleSlot::default();
+    };
+    let width = REVIEW_PANEL_HANDLE_WIDTH.min(host.width);
+    ReviewPanelHandleSlot {
+        reserved_width,
+        rect: Rect::new(
+            host.x.saturating_add(host.width.saturating_sub(width)),
+            host.y,
+            width,
+            1,
+        ),
     }
 }
 
@@ -229,7 +261,7 @@ pub(super) fn render_review_panel(app: &AppState, frame: &mut Frame) {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 label,
-                Style::default().fg(if pending > 0 { p.yellow } else { p.overlay0 }),
+                Style::default().fg(if pending > 0 { p.yellow } else { p.text }),
             )),
             handle_rect,
         );
@@ -575,36 +607,91 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_handle_is_local_and_does_not_resize_terminal() {
+    fn collapsed_layout_leaves_the_terminal_whole_and_defers_handle_placement() {
         let area = Rect::new(26, 0, 74, 24);
         let layout = compute_review_panel_layout(area, false, false);
         assert_eq!(layout.terminal_rect, area);
-        assert_eq!(layout.handle_rect.width, REVIEW_PANEL_HANDLE_WIDTH);
-        assert_eq!(layout.handle_rect.height, 1);
-        assert_eq!(layout.handle_rect.y, area.y + (area.height - 1) / 2);
+        assert_eq!(layout.panel_rect, Rect::default());
+    }
+
+    #[test]
+    fn a_collapsed_handle_sits_at_the_right_of_the_chrome_row() {
+        let tab_bar = Rect::new(26, 4, 74, 1);
+        let terminal = Rect::new(26, 5, 74, 20);
+        let handle =
+            review_panel_handle_slot(&ReviewPanelState::default(), tab_bar, 17, terminal).rect;
+
+        assert_eq!(handle.width, REVIEW_PANEL_HANDLE_WIDTH);
+        assert_eq!(handle.height, 1);
+        assert_eq!(handle.y, tab_bar.y);
+        assert_eq!(handle.x + handle.width, tab_bar.x + tab_bar.width);
+        assert!(!handle.intersects(terminal));
+    }
+
+    #[test]
+    fn a_chrome_row_too_narrow_to_spare_the_handle_keeps_all_of_its_columns() {
+        let panel = ReviewPanelState::default();
+        let terminal = Rect::new(0, 1, 40, 20);
+        let min_content = 17;
+
+        let roomy = Rect::new(0, 0, REVIEW_PANEL_HANDLE_WIDTH + min_content, 1);
+        let roomy_slot = review_panel_handle_slot(&panel, roomy, min_content, terminal);
+        assert_eq!(roomy_slot.reserved_width, REVIEW_PANEL_HANDLE_WIDTH);
+        assert_eq!(roomy_slot.rect.y, roomy.y);
+
+        let cramped = Rect {
+            width: roomy.width - 1,
+            ..roomy
+        };
+        let cramped_slot = review_panel_handle_slot(&panel, cramped, min_content, terminal);
         assert_eq!(
-            layout.handle_rect.x + layout.handle_rect.width,
-            area.x + area.width
+            cramped_slot.reserved_width, 0,
+            "a row that cannot spare the handle must keep its columns"
+        );
+        assert_eq!(
+            cramped_slot.rect.y, terminal.y,
+            "the handle falls back to the terminal top row instead"
         );
     }
 
     #[test]
-    fn a_collapsed_handle_never_lands_on_the_tab_bar_row() {
-        for height in 2..=6u16 {
-            let area = Rect::new(26, 4, 74, height);
-            let layout = compute_review_panel_layout(area, false, false);
-            assert!(
-                layout.handle_rect.y > area.y,
-                "height {height} put the handle on the tab bar row"
+    fn a_missing_chrome_row_pins_the_handle_to_the_terminal_top_row() {
+        let terminal = Rect::new(26, 5, 74, 20);
+        for height in [1u16, 2, 7, 20, 40] {
+            let terminal = Rect { height, ..terminal };
+            let handle = review_panel_handle_slot(
+                &ReviewPanelState::default(),
+                Rect::default(),
+                17,
+                terminal,
+            )
+            .rect;
+            assert_eq!(
+                handle.y, terminal.y,
+                "height {height} moved the handle off the top row"
             );
+            assert_eq!(handle.x + handle.width, terminal.x + terminal.width);
         }
-        let single_row = Rect::new(26, 4, 74, 1);
-        let layout = compute_review_panel_layout(single_row, false, false);
-        assert_eq!(layout.handle_rect.y, single_row.y);
     }
 
     #[test]
-    fn collapsed_handles_render_pending_count_and_dim_empty_label() {
+    fn handle_reservation_is_the_handle_width_until_the_panel_expands() {
+        let mut panel = ReviewPanelState::default();
+        let chrome = Rect::new(0, 0, 60, 1);
+        let terminal = Rect::new(0, 1, 60, 20);
+        assert_eq!(
+            review_panel_handle_slot(&panel, chrome, 17, terminal).reserved_width,
+            REVIEW_PANEL_HANDLE_WIDTH
+        );
+
+        panel.open_manually();
+        let expanded = review_panel_handle_slot(&panel, chrome, 17, terminal);
+        assert_eq!(expanded.reserved_width, 0);
+        assert_eq!(expanded.rect, Rect::default());
+    }
+
+    #[test]
+    fn collapsed_handles_render_pending_count_and_a_readable_empty_label() {
         let mut app = AppState::test_new();
         app.view.review_panel_handle_rect = Rect::new(27, 0, 13, 1);
         app.review_panel
@@ -618,7 +705,7 @@ mod tests {
         let empty = render_buffer(&app, 40, 5);
         assert!(buffer_text(&empty).contains("[‹ Rules]"));
         assert!(!buffer_text(&empty).contains("[‹ Rules 0]"));
-        assert_eq!(empty[(31, 0)].style().fg, Some(app.palette.overlay0));
+        assert_eq!(empty[(31, 0)].style().fg, Some(app.palette.text));
     }
 
     #[test]

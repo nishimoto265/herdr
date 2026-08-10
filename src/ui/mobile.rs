@@ -20,6 +20,9 @@ use crate::layout::PaneId;
 use crate::terminal::TerminalRuntimeRegistry;
 
 const SWITCH_BUTTON_WIDTH: u16 = 10;
+/// The switch button plus the column separating it from the status text. Below this the header
+/// cannot give columns away.
+pub(crate) const MIN_MOBILE_HEADER_CONTENT_WIDTH: u16 = SWITCH_BUTTON_WIDTH + 1;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MobileHeaderHitAreas {
@@ -50,7 +53,16 @@ pub(crate) fn is_mobile_width(area: Rect, threshold: u16) -> bool {
     area.width > 0 && area.width <= threshold
 }
 
-pub(crate) fn compute_mobile_header_hit_areas(_app: &AppState, area: Rect) -> MobileHeaderHitAreas {
+pub(crate) fn compute_mobile_header_hit_areas(
+    _app: &AppState,
+    area: Rect,
+    reserved_trailing_width: u16,
+) -> MobileHeaderHitAreas {
+    // Columns another widget owns on the right of the header, kept clear of the switch button.
+    let area = Rect {
+        width: area.width.saturating_sub(reserved_trailing_width),
+        ..area
+    };
     if area.width == 0 || area.height == 0 {
         return MobileHeaderHitAreas::default();
     }

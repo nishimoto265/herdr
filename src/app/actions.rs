@@ -1592,6 +1592,13 @@ impl AppState {
             self.tab_scroll,
             self.tab_scroll_follow_active,
             self.mouse_capture,
+            crate::ui::review_panel_handle_slot(
+                &self.review_panel,
+                area,
+                crate::ui::MIN_TAB_BAR_CONTENT_WIDTH,
+                self.view.terminal_area,
+            )
+            .reserved_width,
         );
         self.tab_scroll = layout.scroll;
         self.view.tab_hit_areas = layout.tab_hit_areas;

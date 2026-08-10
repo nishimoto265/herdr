@@ -1953,6 +1953,165 @@ mod tests {
     }
 
     #[test]
+    fn a_full_render_keeps_the_handle_label_on_the_tab_bar_row() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("one");
+        ws.tabs[0].set_custom_name("very-long-one".into());
+        ws.test_add_tab(Some("very-long-two"));
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state
+            .review_panel
+            .replace_proposals(vec![crate::app::state::RuleProposalView {
+                proposal_id: "proposal-1".to_string(),
+                rule_text: "Always verify the focused pane.".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 4,
+            }]);
+        app.state.review_panel.close_manually();
+
+        let (buffer, _) = crate::server::render_stream::render_virtual_with_runtime_registry(
+            &mut app.state,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 90, 20),
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let handle = app.state.view.review_panel_handle_rect;
+        assert!(handle.width > 0);
+        let row = (handle.x..handle.x + handle.width)
+            .map(|x| buffer[(x, handle.y)].symbol())
+            .collect::<String>();
+        assert!(
+            row.contains("[‹ Rules 1]"),
+            "tab bar rendering overdrew the handle: {row:?}"
+        );
+    }
+
+    #[test]
+    fn the_tab_overflow_marker_stops_before_the_reserved_handle_columns() {
+        let mut app = app_for_mouse_test();
+        app.state.mouse_capture = false;
+        let mut ws = Workspace::test_new("one");
+        ws.tabs[0].set_custom_name("very-long-one".into());
+        for name in ["two", "three", "four", "five", "six"] {
+            ws.test_add_tab(Some(&format!("very-long-{name}")));
+        }
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state
+            .review_panel
+            .replace_proposals(vec![crate::app::state::RuleProposalView {
+                proposal_id: "proposal-1".to_string(),
+                rule_text: "Always verify the focused pane.".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 4,
+            }]);
+        app.state.review_panel.close_manually();
+
+        let (buffer, _) = crate::server::render_stream::render_virtual_with_runtime_registry(
+            &mut app.state,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 90, 20),
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let handle = app.state.view.review_panel_handle_rect;
+        let tab_bar = app.state.view.tab_bar_rect;
+        assert!(handle.width > 0);
+        assert_eq!(app.state.view.tab_scroll_right_hit_area, Rect::default());
+
+        let marker_x = (tab_bar.x..tab_bar.x + tab_bar.width)
+            .rev()
+            .find(|x| buffer[(*x, tab_bar.y)].symbol() == "…")
+            .expect("overflow marker");
+        assert!(
+            marker_x < handle.x,
+            "overflow marker at {marker_x} sits inside the reserved columns at {}",
+            handle.x
+        );
+    }
+
+    #[test]
+    fn a_hidden_tab_bar_pins_the_collapsed_handle_to_the_terminal_top_row() {
+        let mut app = app_for_mouse_test();
+        app.state.hide_tab_bar_when_single_tab = true;
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state
+            .review_panel
+            .replace_proposals(vec![crate::app::state::RuleProposalView {
+                proposal_id: "proposal-1".to_string(),
+                rule_text: "Always verify the focused pane.".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 4,
+            }]);
+        app.state.review_panel.close_manually();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 65, 20));
+
+        let handle = app.state.view.review_panel_handle_rect;
+        let terminal = app.state.view.terminal_area;
+        assert_eq!(app.state.view.tab_bar_rect, Rect::default());
+        assert!(handle.width > 0);
+        assert_eq!(handle.y, terminal.y);
+        assert_eq!(handle.x + handle.width, terminal.x + terminal.width);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            handle.x + 1,
+            handle.y,
+        ));
+        assert!(app.state.review_panel.is_expanded());
+    }
+
+    #[test]
+    fn an_expanded_review_panel_moves_tab_controls_back_to_the_right() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("one");
+        ws.tabs[0].set_custom_name("very-long-one".into());
+        for name in ["two", "three", "four", "five", "six"] {
+            ws.test_add_tab(Some(&format!("very-long-{name}")));
+        }
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state
+            .review_panel
+            .replace_proposals(vec![crate::app::state::RuleProposalView {
+                proposal_id: "proposal-1".to_string(),
+                rule_text: "Always verify the focused pane.".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 4,
+            }]);
+
+        app.state.review_panel.close_manually();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 90, 20));
+        let tab_bar = app.state.view.tab_bar_rect;
+        let handle = app.state.view.review_panel_handle_rect;
+        assert!(
+            app.state.view.tab_scroll_right_hit_area.width > 0,
+            "needs overflow"
+        );
+        assert_eq!(handle.x, tab_bar.x + tab_bar.width - handle.width);
+        let collapsed_new_tab = app.state.view.new_tab_hit_area;
+        assert!(
+            collapsed_new_tab.x + collapsed_new_tab.width <= handle.x,
+            "tab controls must stay out of the reserved columns"
+        );
+
+        app.state.review_panel.open_manually();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 90, 20));
+        assert_eq!(app.state.view.review_panel_handle_rect, Rect::default());
+        assert!(
+            app.state.view.new_tab_hit_area.x > collapsed_new_tab.x,
+            "expanding the panel should release the reserved columns"
+        );
+    }
+
+    #[test]
     fn collapsed_review_handle_leaves_global_tab_controls_clickable() {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("one");
@@ -1974,15 +2133,26 @@ mod tests {
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 65, 20));
 
         let handle = app.state.view.review_panel_handle_rect;
+        let tab_bar = app.state.view.tab_bar_rect;
         assert!(handle.width > 0);
-        assert!(app.state.view.tab_bar_rect.width > 0);
+        assert!(tab_bar.width > 0);
         assert!(app.state.view.tab_scroll_right_hit_area.width > 0);
-        for control in [
-            app.state.view.tab_bar_rect,
-            app.state.view.tab_scroll_left_hit_area,
-            app.state.view.tab_scroll_right_hit_area,
-            app.state.view.new_tab_hit_area,
-        ] {
+        assert_eq!(handle.y, tab_bar.y);
+        assert_eq!(handle.x + handle.width, tab_bar.x + tab_bar.width);
+        assert!(!handle.intersects(app.state.view.terminal_area));
+        for control in app
+            .state
+            .view
+            .tab_hit_areas
+            .iter()
+            .copied()
+            .chain([
+                app.state.view.tab_scroll_left_hit_area,
+                app.state.view.tab_scroll_right_hit_area,
+                app.state.view.new_tab_hit_area,
+            ])
+            .filter(|rect| rect.width > 0)
+        {
             assert!(
                 !handle.intersects(control),
                 "collapsed handle {handle:?} covers tab control {control:?}"
@@ -2106,6 +2276,37 @@ mod tests {
 
         app.handle_mouse(mouse(MouseEventKind::ScrollUp, panel.x + 1, panel.y + 2));
         assert!(app.state.review_panel.scroll < max_scroll);
+    }
+
+    #[test]
+    fn a_mobile_collapsed_handle_shares_the_header_row_with_the_switch_button() {
+        let mut app = app_for_mouse_test();
+        app.state
+            .review_panel
+            .replace_proposals(vec![crate::app::state::RuleProposalView {
+                proposal_id: "mobile-proposal".to_string(),
+                rule_text: "Keep provider paths private.".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 2,
+            }]);
+        app.state.review_panel.close_manually();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 44, 20));
+        assert_eq!(app.state.view.layout, ViewLayout::Mobile);
+
+        let handle = app.state.view.review_panel_handle_rect;
+        let header = app.state.view.mobile_header_rect;
+        let menu = app.state.view.mobile_menu_hit_area;
+        assert!(handle.width > 0);
+        assert_eq!(handle.y, header.y);
+        assert!(!handle.intersects(menu));
+        assert!(!handle.intersects(app.state.view.terminal_area));
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            handle.x + 1,
+            handle.y,
+        ));
+        assert!(app.state.review_panel.is_expanded());
     }
 
     #[test]
