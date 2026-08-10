@@ -103,7 +103,7 @@ toggle_backside = "prefix+f"
 
 ## Pane backsides
 
-Every pane slot has a resident backside from the moment the pane is created. The front and back are independent terminal processes with separate scrollback and sessions. `prefix+f` switches which side is displayed and receives keyboard, mouse, scroll, and copy-mode input; the hidden side keeps running.
+Every pane slot has a resident backside from the moment the pane is created. The front and back are independent terminal processes with separate scrollback and sessions. `prefix+f` switches which side is displayed and receives keyboard, mouse, scroll, and copy-mode input; the hidden side keeps running. Herdr marks a nonfocused displayed backside with a mauve `BACK` border label. A focused or selected backside keeps its normal accent border while retaining the `BACK` label. When a pane has no border, Herdr shows a small `BACK` badge at the top-right instead.
 
 Backsides are intentionally excluded from the normal agent list, workspace status rollups, and blocked/done notifications. A backside can still be addressed directly through the pane API by appending `:back` to the front pane ID, for example `my-workspace:p1:back`.
 

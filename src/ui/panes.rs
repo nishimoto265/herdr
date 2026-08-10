@@ -7,7 +7,6 @@ use ratatui::{
 };
 
 use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
-#[cfg(test)]
 use super::text::display_width;
 use super::text::truncate_end;
 use super::widgets::panel_contrast_fg;
@@ -21,13 +20,49 @@ pub(crate) fn pane_is_scrolled_back(rt: &TerminalRuntime) -> bool {
         .is_some_and(|metrics| metrics.offset_from_bottom > 0)
 }
 
-fn pane_border_title(label: &str, pane_width: u16, _focused: bool) -> Option<String> {
-    let label = label.trim();
-    if label.is_empty() || pane_width <= 4 {
+const BACKSIDE_LABEL: &str = "BACK";
+
+fn pane_border_title(
+    label: Option<&str>,
+    pane_width: u16,
+    backside_visible: bool,
+) -> Option<String> {
+    if pane_width <= 4 {
         return None;
     }
     let max_label_width = pane_width.saturating_sub(4) as usize;
-    Some(format!(" {} ", truncate_end(label, max_label_width)))
+    let label = label.map(str::trim).filter(|label| !label.is_empty());
+    let title = if backside_visible {
+        if max_label_width < display_width(BACKSIDE_LABEL) {
+            return None;
+        }
+        match label {
+            Some(label) if max_label_width > 8 => format!(
+                "{BACKSIDE_LABEL} · {}",
+                truncate_end(label, max_label_width.saturating_sub(7))
+            ),
+            _ => BACKSIDE_LABEL.to_string(),
+        }
+    } else {
+        truncate_end(label?, max_label_width)
+    };
+    Some(format!(" {title} "))
+}
+
+fn pane_backside_visible(tab: &crate::workspace::Tab, pane_id: crate::layout::PaneId) -> bool {
+    tab.backsides
+        .get(&pane_id)
+        .is_some_and(|backside| backside.visible)
+}
+
+fn pane_chrome_color(palette: &Palette, is_focused: bool, backside_visible: bool) -> Color {
+    if is_focused {
+        palette.accent
+    } else if backside_visible {
+        palette.mauve
+    } else {
+        palette.overlay0
+    }
 }
 
 fn stable_terminal_inner_rect(pane_inner: Rect) -> Rect {
@@ -396,7 +431,7 @@ pub(super) fn render_panes(
         }
     }
 
-    render_pane_borders(app, ws, frame);
+    render_pane_chrome(app, ws, frame);
 }
 
 #[derive(Clone, Copy, Default)]
@@ -405,6 +440,11 @@ struct LineCell {
     down: bool,
     left: bool,
     right: bool,
+}
+
+fn render_pane_chrome(app: &AppState, ws: &crate::workspace::Workspace, frame: &mut Frame) {
+    render_pane_borders(app, ws, frame);
+    render_pane_backside_badges(app, ws, frame);
 }
 
 fn render_pane_borders(app: &AppState, ws: &crate::workspace::Workspace, frame: &mut Frame) {
@@ -445,11 +485,12 @@ fn render_pane_borders(app: &AppState, ws: &crate::workspace::Workspace, frame: 
         }
         let cell = &mut buf[(x, y)];
         cell.set_symbol(symbol);
-        let color = if focused {
-            app.palette.accent
-        } else {
-            app.palette.overlay0
-        };
+        let backside_visible = ws.active_tab().is_some_and(|tab| {
+            app.view.pane_infos.iter().any(|info| {
+                pane_backside_visible(tab, info.id) && line_touches_pane(x, y, info, app.pane_gaps)
+            })
+        });
+        let color = pane_chrome_color(&app.palette, focused, backside_visible);
         cell.set_style(Style::default().fg(color));
     }
 
@@ -578,17 +619,21 @@ fn line_touches_pane(x: u16, y: u16, info: &PaneInfo, pane_gaps: bool) -> bool {
 }
 
 fn render_pane_border_titles(app: &AppState, ws: &crate::workspace::Workspace, frame: &mut Frame) {
+    let Some(tab) = ws.active_tab() else {
+        return;
+    };
     let buf = frame.buffer_mut();
     let area = buf.area;
     for info in &app.view.pane_infos {
         if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
             continue;
         }
-        let Some(title) = ws
-            .pane_state(info.id)
-            .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders))
-            .and_then(|label| pane_border_title(&label, info.rect.width, info.is_focused))
+        let backside_visible = pane_backside_visible(tab, info.id);
+        let label = tab
+            .displayed_terminal_id(info.id)
+            .and_then(|terminal_id| app.terminals.get(terminal_id))
+            .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders));
+        let Some(title) = pane_border_title(label.as_deref(), info.rect.width, backside_visible)
         else {
             continue;
         };
@@ -606,11 +651,7 @@ fn render_pane_border_titles(app: &AppState, ws: &crate::workspace::Workspace, f
         if start_x >= end_x {
             continue;
         }
-        let color = if info.is_focused {
-            app.palette.accent
-        } else {
-            app.palette.overlay0
-        };
+        let color = pane_chrome_color(&app.palette, info.is_focused, backside_visible);
         let mut style = Style::default().fg(color);
         if info.is_focused {
             style = style.add_modifier(Modifier::BOLD);
@@ -621,6 +662,55 @@ fn render_pane_border_titles(app: &AppState, ws: &crate::workspace::Workspace, f
             title,
             end_x.saturating_sub(start_x) as usize,
             style,
+        );
+    }
+}
+
+fn render_pane_backside_badges(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    frame: &mut Frame,
+) {
+    let Some(tab) = ws.active_tab() else {
+        return;
+    };
+    let buf = frame.buffer_mut();
+    let area = buf.area;
+    for info in &app.view.pane_infos {
+        if !info.borders.is_empty() || !pane_backside_visible(tab, info.id) {
+            continue;
+        }
+        let badge = match info.rect.width {
+            0..=3 => continue,
+            4..=5 => BACKSIDE_LABEL,
+            _ => " BACK ",
+        };
+        let badge_width = display_width(badge) as u16;
+        let right = info
+            .rect
+            .x
+            .saturating_add(info.rect.width)
+            .min(area.x.saturating_add(area.width));
+        let y = info.rect.y;
+        if y < area.y
+            || y >= area.y.saturating_add(area.height)
+            || right < area.x.saturating_add(badge_width)
+        {
+            continue;
+        }
+        let start_x = right.saturating_sub(badge_width);
+        if start_x < info.rect.x || start_x >= right {
+            continue;
+        }
+        buf.set_stringn(
+            start_x,
+            y,
+            badge,
+            badge_width as usize,
+            Style::default()
+                .fg(panel_contrast_fg(&app.palette))
+                .bg(app.palette.mauve)
+                .add_modifier(Modifier::BOLD),
         );
     }
 }
@@ -934,31 +1024,41 @@ mod tests {
     #[test]
     fn pane_border_title_trims_and_truncates() {
         assert_eq!(
-            pane_border_title(" claude ", 20, false).as_deref(),
+            pane_border_title(Some(" claude "), 20, false).as_deref(),
             Some(" claude ")
         );
         assert_eq!(
-            pane_border_title(" claude ", 20, true).as_deref(),
-            Some(" claude ")
+            pane_border_title(Some(" claude "), 20, true).as_deref(),
+            Some(" BACK · claude ")
         );
-        assert_eq!(pane_border_title("", 20, false), None);
+        assert_eq!(pane_border_title(None, 20, false), None);
+        assert_eq!(pane_border_title(None, 20, true).as_deref(), Some(" BACK "));
         assert_eq!(
-            pane_border_title("abcdef", 8, false).as_deref(),
+            pane_border_title(Some("abcdef"), 8, false).as_deref(),
             Some(" abc… ")
         );
         assert_eq!(
-            pane_border_title("abcdef", 8, true).as_deref(),
-            Some(" abc… ")
+            pane_border_title(Some("abcdef"), 8, true).as_deref(),
+            Some(" BACK ")
         );
-        assert_eq!(pane_border_title("abcdef", 4, false), None);
+        assert_eq!(pane_border_title(Some("abcdef"), 4, false), None);
     }
 
     #[test]
     fn pane_border_title_truncates_cjk_by_display_width() {
-        let title = pane_border_title("1 模块组织（已定）", 12, false).unwrap();
+        let title = pane_border_title(Some("1 模块组织（已定）"), 12, false).unwrap();
 
         assert_eq!(title, " 1 模块… ");
         assert!(display_width(title.as_str()) <= 10);
+    }
+
+    #[test]
+    fn backside_border_title_keeps_back_marker_and_label_within_pane_width() {
+        let title = pane_border_title(Some("1 模块组织（已定）"), 14, true).unwrap();
+
+        assert!(title.contains(BACKSIDE_LABEL));
+        assert!(title.contains('·'));
+        assert!(display_width(title.as_str()) <= 12);
     }
 
     #[test]
@@ -992,6 +1092,281 @@ mod tests {
         assert_eq!(buffer[(4, 0)].symbol(), "模");
         assert_eq!(buffer[(5, 0)].symbol(), " ");
         assert_eq!(buffer[(6, 0)].symbol(), "块");
+    }
+
+    #[test]
+    fn focused_backside_border_uses_accent_and_preserves_the_back_title() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 16, 3);
+        let mut ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        assert!(ws.toggle_backside(pane_id));
+        app.view.pane_infos = vec![PaneInfo {
+            id: pane_id,
+            rect: Rect::new(0, 0, 16, 3),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::ALL,
+            is_focused: true,
+        }];
+
+        let back_terminal_id = ws.tabs[0].backsides[&pane_id]
+            .pane
+            .attached_terminal_id
+            .clone();
+        let mut terminal_state = TerminalState::new(back_terminal_id.clone(), "/tmp".into());
+        terminal_state.set_manual_label("reviewer".into());
+        app.terminals.insert(back_terminal_id, terminal_state);
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(16, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, &ws, frame))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 1)].style().fg, Some(app.palette.accent));
+        assert_eq!(buffer[(2, 0)].symbol(), "B");
+        assert_eq!(buffer[(2, 0)].style().fg, Some(app.palette.accent));
+        assert!(buffer.content().iter().any(|cell| cell.symbol() == "r"));
+    }
+
+    #[test]
+    fn focused_zoomed_backside_keeps_back_title_with_accent_border() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let mut ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(pane_id);
+        ws.tabs[0].zoomed = true;
+        assert!(ws.toggle_backside(pane_id));
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        app.view.pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 16, 3),
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let ws = &app.workspaces[0];
+        assert_eq!(app.view.pane_infos.len(), 1);
+        assert!(app.view.pane_infos[0].borders.contains(Borders::TOP));
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(16, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, ws, frame))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 1)].style().fg, Some(app.palette.accent));
+        assert_eq!(buffer[(2, 0)].symbol(), "B");
+        assert_eq!(buffer[(2, 0)].style().fg, Some(app.palette.accent));
+    }
+
+    #[test]
+    fn multi_pane_backside_and_front_borders_keep_distinct_colours() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let mut ws = Workspace::test_new("test");
+        let back_pane_id = ws.tabs[0].root_pane;
+        let front_pane_id = ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(front_pane_id);
+        assert!(ws.toggle_backside(back_pane_id));
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        app.view.pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 16, 3),
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let ws = &app.workspaces[0];
+        let back_info = app
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == back_pane_id)
+            .unwrap();
+        let front_info = app
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == front_pane_id)
+            .unwrap();
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(16, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, ws, frame))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[(back_info.rect.x, back_info.rect.y.saturating_add(1))]
+                .style()
+                .fg,
+            Some(app.palette.mauve)
+        );
+        assert_eq!(
+            buffer[(back_info.rect.x.saturating_add(2), back_info.rect.y)]
+                .style()
+                .fg,
+            Some(app.palette.mauve)
+        );
+        assert_eq!(
+            buffer[(
+                front_info
+                    .rect
+                    .x
+                    .saturating_add(front_info.rect.width)
+                    .saturating_sub(1),
+                front_info.rect.y.saturating_add(1)
+            )]
+                .style()
+                .fg,
+            Some(app.palette.accent)
+        );
+    }
+
+    #[test]
+    fn borderless_backside_renders_a_mauve_back_badge_without_changing_pane_geometry() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.pane_borders = false;
+        app.view.terminal_area = Rect::new(0, 0, 12, 3);
+        let mut ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        assert!(ws.toggle_backside(pane_id));
+        let pane_rect = Rect::new(0, 0, 12, 3);
+        app.view.pane_infos = vec![PaneInfo {
+            id: pane_id,
+            rect: pane_rect,
+            inner_rect: pane_rect,
+            scrollbar_rect: None,
+            borders: Borders::NONE,
+            is_focused: true,
+        }];
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, &ws, frame))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(6, 0)].symbol(), " ");
+        assert_eq!(buffer[(7, 0)].symbol(), "B");
+        assert_eq!(buffer[(10, 0)].symbol(), "K");
+        assert_eq!(buffer[(7, 0)].style().bg, Some(app.palette.mauve));
+        assert_eq!(app.view.pane_infos[0].rect, pane_rect);
+        assert_eq!(app.view.pane_infos[0].inner_rect, pane_rect);
+    }
+
+    #[test]
+    fn single_pane_backside_renders_a_mauve_back_badge() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let mut ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        assert!(ws.toggle_backside(pane_id));
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        app.view.pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 12, 3),
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let ws = &app.workspaces[0];
+        assert!(app.view.pane_infos[0].borders.is_empty());
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, ws, frame))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(7, 0)].symbol(), "B");
+        assert_eq!(buffer[(7, 0)].style().bg, Some(app.palette.mauve));
+    }
+
+    #[test]
+    fn narrow_backside_badges_fit_or_hide_without_overflowing() {
+        for (width, expected) in [(3, "   "), (4, "BACK"), (5, " BACK"), (6, " BACK ")] {
+            let mut app = AppState::test_new();
+            app.mode = Mode::Terminal;
+            app.pane_borders = false;
+            let mut ws = Workspace::test_new("test");
+            let pane_id = ws.tabs[0].root_pane;
+            assert!(ws.toggle_backside(pane_id));
+            app.view.pane_infos = vec![PaneInfo {
+                id: pane_id,
+                rect: Rect::new(0, 0, width, 3),
+                inner_rect: Rect::new(0, 0, width, 3),
+                scrollbar_rect: None,
+                borders: Borders::NONE,
+                is_focused: true,
+            }];
+
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 3)).unwrap();
+            terminal
+                .draw(|frame| render_pane_chrome(&app, &ws, frame))
+                .unwrap();
+
+            let buffer = terminal.backend().buffer();
+            let rendered = (0..width)
+                .map(|x| buffer[(x, 0)].symbol())
+                .collect::<String>();
+            assert_eq!(rendered, expected);
+            let badge_background = buffer[(width.saturating_sub(1), 0)].style().bg;
+            if width >= 4 {
+                assert_eq!(badge_background, Some(app.palette.mauve));
+            } else {
+                assert_ne!(badge_background, Some(app.palette.mauve));
+            }
+        }
+    }
+
+    #[test]
+    fn front_pane_without_borders_has_no_back_badge() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.pane_borders = false;
+        app.view.terminal_area = Rect::new(0, 0, 12, 3);
+        let ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        app.view.pane_infos = vec![PaneInfo {
+            id: pane_id,
+            rect: Rect::new(0, 0, 12, 3),
+            inner_rect: Rect::new(0, 0, 12, 3),
+            scrollbar_rect: None,
+            borders: Borders::NONE,
+            is_focused: true,
+        }];
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, &ws, frame))
+            .unwrap();
+
+        assert!(terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .all(|cell| cell.style().bg != Some(app.palette.mauve)));
     }
 
     #[test]
