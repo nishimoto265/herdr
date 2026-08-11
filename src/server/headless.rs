@@ -3205,11 +3205,7 @@ impl HeadlessServer {
         }
 
         let mut touched = false;
-        let mut overlay_rects = vec![self.app.state.view.review_panel_rail_rect];
-        if self.app.state.view.review_panel_overlay {
-            overlay_rects.push(self.app.state.view.review_panel_rect);
-        }
-        overlay_rects.retain(|rect| rect.width > 0 && rect.height > 0);
+        let overlay_rects = self.app.state.view.terminal_content_overlay_rects();
         for info in pane_infos {
             if !rect_fits_frame(info.inner_rect, &frame) {
                 retained_fallback!("pane_rect_outside_frame");

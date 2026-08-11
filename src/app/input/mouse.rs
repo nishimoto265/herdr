@@ -37,6 +37,10 @@ pub(super) enum MouseAction {
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
     },
+    ToggleBackside {
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+    },
     FocusToastTarget,
     MoveWorkspace {
         source_ws_idx: usize,
@@ -306,6 +310,26 @@ impl AppState {
                 self.selection = None;
                 self.selection_autoscroll = None;
                 self.workspace_press = None;
+                // An overlay can swallow the mouse-up that ends a control press, and a stale
+                // toggle drag would then eat every later drag, including selection drags.
+                if matches!(
+                    self.drag.as_ref().map(|drag| &drag.target),
+                    Some(DragTarget::PaneBacksideToggle)
+                ) {
+                    self.drag = None;
+                }
+
+                if matches!(self.mode, Mode::Terminal | Mode::Resize) {
+                    if let Some((ws_idx, pane_id)) =
+                        self.pane_backside_toggle_at(mouse.column, mouse.row)
+                    {
+                        self.mode = Mode::Terminal;
+                        self.drag = Some(DragState {
+                            target: DragTarget::PaneBacksideToggle,
+                        });
+                        return Some(MouseAction::ToggleBackside { ws_idx, pane_id });
+                    }
+                }
 
                 if self.mode == Mode::ConfirmClose {
                     let popup = self.confirm_close_rect();
@@ -759,6 +783,12 @@ impl AppState {
             }
 
             MouseEventKind::Drag(MouseButton::Left) => {
+                if matches!(
+                    self.drag.as_ref().map(|drag| &drag.target),
+                    Some(DragTarget::PaneBacksideToggle)
+                ) {
+                    return None;
+                }
                 if self.selection.is_some() {
                     self.update_selection_drag(terminal_runtimes, mouse.column, mouse.row);
                     return None;
@@ -890,7 +920,8 @@ impl AppState {
                         DragTarget::SidebarSectionDivider => {
                             self.set_sidebar_section_split(mouse.row);
                         }
-                        DragTarget::ReleaseNotesScrollbar { .. }
+                        DragTarget::PaneBacksideToggle
+                        | DragTarget::ReleaseNotesScrollbar { .. }
                         | DragTarget::ProductAnnouncementScrollbar { .. }
                         | DragTarget::KeybindHelpScrollbar { .. } => {}
                     }
@@ -898,6 +929,16 @@ impl AppState {
             }
 
             MouseEventKind::Up(MouseButton::Left) => {
+                if matches!(
+                    self.drag.as_ref().map(|drag| &drag.target),
+                    Some(DragTarget::PaneBacksideToggle)
+                ) {
+                    self.drag = None;
+                    self.workspace_press = None;
+                    self.tab_press = None;
+                    self.selection_autoscroll = None;
+                    return None;
+                }
                 // Mouse-up either finishes a drag selection or releases after a
                 // double-click copy; the latter is already copied.
                 if let Some(selection) = self.selection.as_ref() {
@@ -1482,6 +1523,19 @@ impl AppState {
                 && row >= p.inner_rect.y
                 && row < p.inner_rect.y + p.inner_rect.height
         })
+    }
+
+    pub(super) fn pane_backside_toggle_at(
+        &self,
+        col: u16,
+        row: u16,
+    ) -> Option<(usize, crate::layout::PaneId)> {
+        let ws_idx = self.active?;
+        self.view
+            .pane_backside_toggle_areas
+            .iter()
+            .find(|area| rect_contains(area.rect, col, row))
+            .map(|area| (ws_idx, area.pane_id))
     }
 
     pub(super) fn pane_mouse_target(&self, col: u16, row: u16) -> Option<&PaneInfo> {
@@ -3237,6 +3291,177 @@ mod tests {
                 .map(|selection| selection.pane_id),
             Some(second_pane)
         );
+    }
+
+    #[test]
+    fn pane_toggle_click_focuses_target_and_toggles_only_that_slot() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let first_pane = ws.tabs[0].root_pane;
+        let second_pane = ws.test_split(Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(first_pane);
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let toggle = app
+            .state
+            .view
+            .pane_backside_toggle_areas
+            .iter()
+            .find(|area| area.pane_id == second_pane)
+            .expect("second pane toggle")
+            .rect;
+        let first_toggle_of_second_pane = toggle;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            toggle.x.saturating_add(toggle.width).saturating_sub(1),
+            toggle.y,
+        ));
+
+        let tab = app.state.workspaces[0].active_tab().expect("active tab");
+        assert_eq!(tab.layout.focused(), second_pane);
+        assert!(!tab.backsides[&first_pane].visible);
+        assert!(tab.backsides[&second_pane].visible);
+        assert!(app.state.session_dirty);
+
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let toggle = app
+            .state
+            .view
+            .pane_backside_toggle_areas
+            .iter()
+            .find(|area| area.pane_id == second_pane)
+            .expect("second pane back toggle")
+            .rect;
+        // The control keeps its size and place across faces; only the border title changes.
+        assert_eq!(toggle, first_toggle_of_second_pane);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            toggle.x.saturating_add(toggle.width).saturating_sub(1),
+            toggle.y,
+        ));
+
+        let tab = app.state.workspaces[0].active_tab().expect("active tab");
+        assert!(!tab.backsides[&first_pane].visible);
+        assert!(!tab.backsides[&second_pane].visible);
+    }
+
+    #[test]
+    fn borderless_face_name_is_a_label_and_only_the_control_toggles() {
+        let mut app = app_for_mouse_test();
+        let ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.view.pane_infos = vec![PaneInfo {
+            id: pane_id,
+            rect: Rect::new(20, 3, 20, 5),
+            inner_rect: Rect::new(20, 3, 20, 5),
+            scrollbar_rect: None,
+            borders: ratatui::widgets::Borders::NONE,
+            is_focused: true,
+        }];
+        let toggle = Rect::new(37, 3, 3, 1);
+        let face = Rect::new(31, 3, 6, 1);
+        app.state.view.pane_backside_toggle_areas =
+            vec![crate::app::state::PaneBacksideToggleArea {
+                pane_id,
+                rect: toggle,
+                face_rect: face,
+            }];
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            face.x + 1,
+            face.y,
+        ));
+        assert!(!app.state.workspaces[0].tabs[0].backsides[&pane_id].visible);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            toggle.x + 1,
+            toggle.y,
+        ));
+        assert!(app.state.workspaces[0].tabs[0].backsides[&pane_id].visible);
+    }
+
+    #[tokio::test]
+    async fn pane_toggle_consumes_full_gesture_and_never_seeds_double_click_copy() {
+        let mut app = app_for_mouse_test();
+        let ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        let front_terminal = ws.tabs[0].panes[&pane_id].attached_terminal_id.clone();
+        let back_terminal = ws.tabs[0].backsides[&pane_id]
+            .pane
+            .attached_terminal_id
+            .clone();
+        let (front_runtime, mut front_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                20,
+                5,
+                0,
+                b"\x1b[?1002h\x1b[?1006hunderlying",
+                4,
+            );
+        let (back_runtime, mut back_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                20,
+                5,
+                0,
+                b"\x1b[?1002h\x1b[?1006hunderlying",
+                4,
+            );
+        app.terminal_runtimes.insert(front_terminal, front_runtime);
+        app.terminal_runtimes.insert(back_terminal, back_runtime);
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.view.pane_infos = vec![PaneInfo {
+            id: pane_id,
+            rect: Rect::new(30, 3, 20, 5),
+            inner_rect: Rect::new(30, 3, 20, 5),
+            scrollbar_rect: None,
+            borders: ratatui::widgets::Borders::NONE,
+            is_focused: true,
+        }];
+        let toggle = Rect::new(47, 3, 3, 1);
+        app.state.view.pane_backside_toggle_areas =
+            vec![crate::app::state::PaneBacksideToggleArea {
+                pane_id,
+                rect: toggle,
+                face_rect: Rect::default(),
+            }];
+        let col = toggle.x.saturating_add(toggle.width).saturating_sub(1);
+        let row = toggle.y;
+
+        for expected_visible in [true, false] {
+            app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+            app.handle_mouse(mouse(
+                MouseEventKind::Drag(MouseButton::Left),
+                col.saturating_sub(2),
+                row.saturating_add(1),
+            ));
+            app.handle_mouse(mouse(
+                MouseEventKind::Up(MouseButton::Left),
+                col.saturating_sub(2),
+                row.saturating_add(1),
+            ));
+            assert_eq!(
+                app.state.workspaces[0].tabs[0].backsides[&pane_id].visible,
+                expected_visible
+            );
+        }
+
+        assert!(app.state.drag.is_none());
+        assert!(app.state.selection.is_none());
+        assert!(app.last_pane_click.is_none());
+        assert!(app.event_rx.try_recv().is_err());
+        assert!(front_rx.try_recv().is_err());
+        assert!(back_rx.try_recv().is_err());
     }
 
     #[test]

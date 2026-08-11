@@ -21,6 +21,16 @@ pub(crate) fn pane_is_scrolled_back(rt: &TerminalRuntime) -> bool {
 }
 
 const BACKSIDE_LABEL: &str = "BACK";
+const FRONTSIDE_LABEL: &str = "FRONT";
+const PANE_BACKSIDE_TOGGLE_CONTROL: &str = "[⇄]";
+
+fn pane_face_label(backside_visible: bool) -> &'static str {
+    if backside_visible {
+        BACKSIDE_LABEL
+    } else {
+        FRONTSIDE_LABEL
+    }
+}
 
 fn pane_border_title(
     label: Option<&str>,
@@ -31,20 +41,18 @@ fn pane_border_title(
         return None;
     }
     let max_label_width = pane_width.saturating_sub(4) as usize;
+    let face = pane_face_label(backside_visible);
+    if max_label_width < display_width(face) {
+        return None;
+    }
+    let face_and_separator = display_width(face) + display_width(" · ");
     let label = label.map(str::trim).filter(|label| !label.is_empty());
-    let title = if backside_visible {
-        if max_label_width < display_width(BACKSIDE_LABEL) {
-            return None;
-        }
-        match label {
-            Some(label) if max_label_width > 8 => format!(
-                "{BACKSIDE_LABEL} · {}",
-                truncate_end(label, max_label_width.saturating_sub(7))
-            ),
-            _ => BACKSIDE_LABEL.to_string(),
-        }
-    } else {
-        truncate_end(label?, max_label_width)
+    let title = match label {
+        Some(label) if max_label_width > face_and_separator + 1 => format!(
+            "{face} · {}",
+            truncate_end(label, max_label_width.saturating_sub(face_and_separator))
+        ),
+        _ => face.to_string(),
     };
     Some(format!(" {title} "))
 }
@@ -63,6 +71,82 @@ fn pane_chrome_color(palette: &Palette, is_focused: bool, backside_visible: bool
     } else {
         palette.overlay0
     }
+}
+
+fn pane_backside_toggle_area(
+    info: &PaneInfo,
+    review_rail: Rect,
+    backside_visible: bool,
+) -> Option<crate::app::state::PaneBacksideToggleArea> {
+    if info.rect.width == 0 || info.rect.height == 0 {
+        return None;
+    }
+
+    // With gaps off, a pane with a right neighbour drops its right border and ends on its own
+    // top-border cell, so the control has to reach the pane edge to sit flush against the divider.
+    let mut right = info.rect.x.saturating_add(info.rect.width);
+    if info.borders.contains(Borders::RIGHT) {
+        right = right.saturating_sub(1);
+    }
+    let y = info.rect.y;
+    if review_rail.width > 0
+        && y >= review_rail.y
+        && y < review_rail.y.saturating_add(review_rail.height)
+        && review_rail.x < right
+        && review_rail.x.saturating_add(review_rail.width) > info.rect.x
+    {
+        right = right.min(review_rail.x);
+    }
+
+    let left = if info.borders.contains(Borders::LEFT) {
+        info.rect.x.saturating_add(1)
+    } else {
+        info.rect.x
+    };
+    let control_width = display_width(PANE_BACKSIDE_TOGGLE_CONTROL) as u16;
+    let available = right.saturating_sub(left);
+    if available < control_width {
+        return None;
+    }
+    let control = Rect::new(right.saturating_sub(control_width), y, control_width, 1);
+
+    // A slot without borders has no border title, so the face name rides beside the control.
+    let face_rect = if info.borders.is_empty() {
+        let face_width = display_width(pane_face_label(backside_visible)) as u16 + 1;
+        if available >= control_width.saturating_add(face_width) {
+            Rect::new(control.x.saturating_sub(face_width), y, face_width, 1)
+        } else {
+            Rect::default()
+        }
+    } else {
+        Rect::default()
+    };
+
+    Some(crate::app::state::PaneBacksideToggleArea {
+        pane_id: info.id,
+        rect: control,
+        face_rect,
+    })
+}
+
+pub(super) fn compute_pane_backside_toggle_areas(
+    app: &AppState,
+    pane_infos: &[PaneInfo],
+    review_rail: Rect,
+) -> Vec<crate::app::state::PaneBacksideToggleArea> {
+    let Some(tab) = app
+        .active
+        .and_then(|ws_idx| app.workspaces.get(ws_idx))
+        .and_then(crate::workspace::Workspace::active_tab)
+    else {
+        return Vec::new();
+    };
+    pane_infos
+        .iter()
+        .filter_map(|info| {
+            pane_backside_toggle_area(info, review_rail, pane_backside_visible(tab, info.id))
+        })
+        .collect()
 }
 
 fn stable_terminal_inner_rect(pane_inner: Rect) -> Rect {
@@ -444,7 +528,7 @@ struct LineCell {
 
 fn render_pane_chrome(app: &AppState, ws: &crate::workspace::Workspace, frame: &mut Frame) {
     render_pane_borders(app, ws, frame);
-    render_pane_backside_badges(app, ws, frame);
+    render_pane_backside_toggles(app, ws, frame);
 }
 
 fn render_pane_borders(app: &AppState, ws: &crate::workspace::Workspace, frame: &mut Frame) {
@@ -629,28 +713,42 @@ fn render_pane_border_titles(app: &AppState, ws: &crate::workspace::Workspace, f
             continue;
         }
         let backside_visible = pane_backside_visible(tab, info.id);
-        let label = tab
-            .displayed_terminal_id(info.id)
-            .and_then(|terminal_id| app.terminals.get(terminal_id))
-            .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders));
-        let Some(title) = pane_border_title(label.as_deref(), info.rect.width, backside_visible)
-        else {
-            continue;
-        };
         let y = info.rect.y;
         if y < area.y || y >= area.y.saturating_add(area.height) {
             continue;
         }
         let start_x = info.rect.x.saturating_add(1);
-        let end_x = info
+        let mut end_x = info
             .rect
             .x
             .saturating_add(info.rect.width)
             .saturating_sub(1)
             .min(area.x.saturating_add(area.width));
+        if let Some(toggle) = app
+            .view
+            .pane_backside_toggle_areas
+            .iter()
+            .find(|toggle| toggle.pane_id == info.id)
+        {
+            end_x = end_x.min(toggle.rect.x);
+        }
         if start_x >= end_x {
             continue;
         }
+        let label = tab
+            .displayed_terminal_id(info.id)
+            .and_then(|terminal_id| app.terminals.get(terminal_id))
+            .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders));
+        // pane_border_title budgets from a pane width, so convert the drawable span back into
+        // one. A budget wider than the span lets set_stringn cut the title mid-word without
+        // truncate_end's ellipsis.
+        let Some(title) = pane_border_title(
+            label.as_deref(),
+            end_x.saturating_sub(start_x).saturating_add(2),
+            backside_visible,
+        ) else {
+            continue;
+        };
         let color = pane_chrome_color(&app.palette, info.is_focused, backside_visible);
         let mut style = Style::default().fg(color);
         if info.is_focused {
@@ -666,7 +764,7 @@ fn render_pane_border_titles(app: &AppState, ws: &crate::workspace::Workspace, f
     }
 }
 
-fn render_pane_backside_badges(
+fn render_pane_backside_toggles(
     app: &AppState,
     ws: &crate::workspace::Workspace,
     frame: &mut Frame,
@@ -677,51 +775,54 @@ fn render_pane_backside_badges(
     let buf = frame.buffer_mut();
     let area = buf.area;
     for info in &app.view.pane_infos {
-        if !info.borders.is_empty() || !pane_backside_visible(tab, info.id) {
+        let backside_visible = pane_backside_visible(tab, info.id);
+        let Some(toggle) = app
+            .view
+            .pane_backside_toggle_areas
+            .iter()
+            .find(|toggle| toggle.pane_id == info.id)
+        else {
             continue;
-        }
-        let badge = match info.rect.width {
-            0..=3 => continue,
-            4..=5 => BACKSIDE_LABEL,
-            _ => " BACK ",
         };
-        let badge_width = display_width(badge) as u16;
-        let mut right = info
-            .rect
-            .x
-            .saturating_add(info.rect.width)
-            .min(area.x.saturating_add(area.width));
-        let y = info.rect.y;
-        let rail = app.view.review_panel_rail_rect;
-        if rail.width > 0
-            && y >= rail.y
-            && y < rail.y.saturating_add(rail.height)
-            && rail.x < right
-            && rail.x.saturating_add(rail.width) > info.rect.x
-        {
-            right = right.min(rail.x);
-        }
-        if y < area.y
-            || y >= area.y.saturating_add(area.height)
-            || right < area.x.saturating_add(badge_width)
-        {
+        if !rect_fits_within(toggle.rect, area) {
             continue;
         }
-        let start_x = right.saturating_sub(badge_width);
-        if start_x < info.rect.x || start_x >= right {
-            continue;
+        let color = pane_chrome_color(&app.palette, info.is_focused, backside_visible);
+        let mut style = Style::default().fg(color);
+        if info.is_focused {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if toggle.face_rect.width > 0 && rect_fits_within(toggle.face_rect, area) {
+            buf.set_stringn(
+                toggle.face_rect.x,
+                toggle.face_rect.y,
+                pane_face_label(backside_visible),
+                toggle.face_rect.width as usize,
+                style,
+            );
+            buf.set_stringn(
+                toggle.rect.x.saturating_sub(1),
+                toggle.rect.y,
+                " ",
+                1,
+                style,
+            );
         }
         buf.set_stringn(
-            start_x,
-            y,
-            badge,
-            badge_width as usize,
-            Style::default()
-                .fg(panel_contrast_fg(&app.palette))
-                .bg(app.palette.mauve)
-                .add_modifier(Modifier::BOLD),
+            toggle.rect.x,
+            toggle.rect.y,
+            PANE_BACKSIDE_TOGGLE_CONTROL,
+            toggle.rect.width as usize,
+            style,
         );
     }
+}
+
+fn rect_fits_within(rect: Rect, area: Rect) -> bool {
+    rect.x >= area.x
+        && rect.x.saturating_add(rect.width) <= area.x.saturating_add(area.width)
+        && rect.y >= area.y
+        && rect.y.saturating_add(rect.height) <= area.y.saturating_add(area.height)
 }
 
 fn line_cell_symbol(line: LineCell) -> &'static str {
@@ -1030,35 +1131,57 @@ mod tests {
     use crate::terminal::TerminalState;
     use crate::workspace::Workspace;
 
+    fn buffer_text(buffer: &ratatui::buffer::Buffer, rect: Rect) -> String {
+        (rect.x..rect.x.saturating_add(rect.width))
+            .map(|x| buffer[(x, rect.y)].symbol())
+            .collect()
+    }
+
     #[test]
-    fn pane_border_title_trims_and_truncates() {
+    fn pane_border_title_names_the_displayed_face() {
         assert_eq!(
             pane_border_title(Some(" claude "), 20, false).as_deref(),
-            Some(" claude ")
+            Some(" FRONT · claude ")
         );
         assert_eq!(
             pane_border_title(Some(" claude "), 20, true).as_deref(),
             Some(" BACK · claude ")
         );
-        assert_eq!(pane_border_title(None, 20, false), None);
-        assert_eq!(pane_border_title(None, 20, true).as_deref(), Some(" BACK "));
         assert_eq!(
-            pane_border_title(Some("abcdef"), 8, false).as_deref(),
-            Some(" abc… ")
+            pane_border_title(None, 20, false).as_deref(),
+            Some(" FRONT ")
+        );
+        assert_eq!(pane_border_title(None, 20, true).as_deref(), Some(" BACK "));
+    }
+
+    #[test]
+    fn pane_border_title_trims_and_truncates() {
+        assert_eq!(
+            pane_border_title(Some(" claude "), 14, false).as_deref(),
+            Some(" FRONT · c… ")
+        );
+        assert_eq!(
+            pane_border_title(Some("abcdef"), 13, true).as_deref(),
+            Some(" BACK · a… ")
+        );
+        // The face name owns the identity, so a label that no longer fits is dropped instead.
+        assert_eq!(
+            pane_border_title(Some("abcdef"), 10, false).as_deref(),
+            Some(" FRONT ")
         );
         assert_eq!(
             pane_border_title(Some("abcdef"), 8, true).as_deref(),
             Some(" BACK ")
         );
-        assert_eq!(pane_border_title(Some("abcdef"), 4, false), None);
+        assert_eq!(pane_border_title(Some("abcdef"), 8, false), None);
+        assert_eq!(pane_border_title(Some("abcdef"), 4, true), None);
     }
 
     #[test]
     fn pane_border_title_truncates_cjk_by_display_width() {
-        let title = pane_border_title(Some("1 模块组织（已定）"), 12, false).unwrap();
+        let title = pane_border_title(Some("1 模块组织（已定）"), 20, false).unwrap();
 
-        assert_eq!(title, " 1 模块… ");
-        assert!(display_width(title.as_str()) <= 10);
+        assert_eq!(title, " FRONT · 1 模块… ");
     }
 
     #[test]
@@ -1074,17 +1197,20 @@ mod tests {
     fn pane_border_renderer_places_adjacent_cjk_by_display_width() {
         let mut app = AppState::test_new();
         app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 12, 3);
+        app.view.terminal_area = Rect::new(0, 0, 24, 3);
         let ws = Workspace::test_new("test");
         let pane_id = ws.tabs[0].root_pane;
-        app.view.pane_infos = vec![PaneInfo {
+        let info = PaneInfo {
             id: pane_id,
-            rect: Rect::new(0, 0, 12, 3),
+            rect: Rect::new(0, 0, 24, 3),
             inner_rect: Rect::default(),
             scrollbar_rect: None,
             borders: Borders::ALL,
             is_focused: false,
-        }];
+        };
+        app.view.pane_backside_toggle_areas =
+            vec![pane_backside_toggle_area(&info, Rect::default(), false).unwrap()];
+        app.view.pane_infos = vec![info];
 
         let terminal_id = ws.tabs[0].panes[&pane_id].attached_terminal_id.clone();
         let mut terminal_state = TerminalState::new(terminal_id.clone(), "/tmp".into());
@@ -1092,15 +1218,15 @@ mod tests {
         app.terminals.insert(terminal_id, terminal_state);
 
         let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 3)).unwrap();
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(24, 3)).unwrap();
         terminal
             .draw(|frame| render_pane_borders(&app, &ws, frame))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(4, 0)].symbol(), "模");
-        assert_eq!(buffer[(5, 0)].symbol(), " ");
-        assert_eq!(buffer[(6, 0)].symbol(), "块");
+        assert_eq!(buffer[(12, 0)].symbol(), "模");
+        assert_eq!(buffer[(13, 0)].symbol(), " ");
+        assert_eq!(buffer[(14, 0)].symbol(), "块");
     }
 
     #[test]
@@ -1194,7 +1320,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_single_pane_backside_badge_stays_visible_beside_review_rail() {
+    fn single_pane_backside_toggle_stays_visible_beside_review_rail() {
         let mut app = AppState::test_new();
         app.mode = Mode::Terminal;
         let mut ws = Workspace::test_new("test");
@@ -1215,11 +1341,365 @@ mod tests {
         let rail = app.view.review_panel_rail_rect;
         assert!(pane.borders.is_empty());
         assert!(rail.width > 0);
-        let badge_x = rail.x.saturating_sub(5);
-        assert_eq!(buffer[(badge_x, pane.rect.y)].symbol(), "B");
+        let toggle = &app.view.pane_backside_toggle_areas[0];
+        assert_eq!(toggle.rect.x.saturating_add(toggle.rect.width), rail.x);
         assert_eq!(
-            buffer[(badge_x, pane.rect.y)].style().bg,
+            buffer_text(&buffer, toggle.rect),
+            PANE_BACKSIDE_TOGGLE_CONTROL
+        );
+        assert_eq!(
+            buffer_text(&buffer, toggle.face_rect),
+            format!("{BACKSIDE_LABEL} ")
+        );
+        assert_eq!(
+            buffer[(toggle.rect.x, toggle.rect.y)].style().fg,
+            Some(app.palette.accent)
+        );
+    }
+
+    #[test]
+    fn pane_toggle_control_is_arrow_only_and_never_crosses_borders() {
+        let bordered = PaneInfo {
+            id: PaneId::from_raw(1),
+            rect: Rect::new(4, 2, 12, 4),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::ALL,
+            is_focused: true,
+        };
+        let front = pane_backside_toggle_area(&bordered, Rect::default(), false).unwrap();
+        let back = pane_backside_toggle_area(&bordered, Rect::default(), true).unwrap();
+        assert_eq!(front.rect, Rect::new(12, 2, 3, 1));
+        assert_eq!(back.rect, front.rect);
+        // The border title carries the face name, so a bordered slot never repeats it.
+        assert_eq!(front.face_rect, Rect::default());
+        assert_eq!(back.face_rect, Rect::default());
+
+        let narrow = PaneInfo {
+            rect: Rect::new(4, 2, 5, 4),
+            ..bordered
+        };
+        assert_eq!(
+            pane_backside_toggle_area(&narrow, Rect::default(), false)
+                .unwrap()
+                .rect,
+            Rect::new(5, 2, 3, 1)
+        );
+
+        let tiny_info = PaneInfo {
+            rect: Rect::new(4, 2, 4, 4),
+            ..bordered
+        };
+        assert!(pane_backside_toggle_area(&tiny_info, Rect::default(), false).is_none());
+
+        // Gapless panes drop their right border, so the control has to reach the pane edge.
+        let gapless = PaneInfo {
+            borders: Borders::ALL.difference(Borders::RIGHT),
+            ..bordered
+        };
+        assert_eq!(
+            pane_backside_toggle_area(&gapless, Rect::default(), false)
+                .unwrap()
+                .rect,
+            Rect::new(13, 2, 3, 1)
+        );
+    }
+
+    #[test]
+    fn border_title_follows_displayed_face_with_the_same_rules() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let mut ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        let info = PaneInfo {
+            id: pane_id,
+            rect: Rect::new(0, 0, 24, 3),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::ALL,
+            is_focused: false,
+        };
+        app.view.pane_backside_toggle_areas =
+            vec![pane_backside_toggle_area(&info, Rect::default(), false).unwrap()];
+        app.view.pane_infos = vec![info];
+
+        for terminal_id in [
+            ws.tabs[0].panes[&pane_id].attached_terminal_id.clone(),
+            ws.tabs[0].backsides[&pane_id]
+                .pane
+                .attached_terminal_id
+                .clone(),
+        ] {
+            let mut terminal_state = TerminalState::new(terminal_id.clone(), "/tmp".into());
+            terminal_state.set_manual_label("abcdefghijklmnopqrst".into());
+            app.terminals.insert(terminal_id, terminal_state);
+        }
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(24, 3)).unwrap();
+        // The title runs from just inside the left border up to the control.
+        let title_x = 1;
+        let title_rect = Rect::new(
+            title_x,
+            0,
+            app.view.pane_backside_toggle_areas[0]
+                .rect
+                .x
+                .saturating_sub(title_x),
+            1,
+        );
+        terminal
+            .draw(|frame| render_pane_chrome(&app, &ws, frame))
+            .unwrap();
+        assert_eq!(
+            buffer_text(terminal.backend().buffer(), title_rect),
+            " FRONT · abcdefgh… "
+        );
+
+        assert!(ws.toggle_backside(pane_id));
+        terminal
+            .draw(|frame| render_pane_chrome(&app, &ws, frame))
+            .unwrap();
+        assert_eq!(
+            buffer_text(terminal.backend().buffer(), title_rect),
+            " BACK · abcdefghi… "
+        );
+    }
+
+    #[test]
+    fn borderless_slot_names_the_face_beside_the_control() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        let info = PaneInfo {
+            id: pane_id,
+            rect: Rect::new(0, 0, 20, 3),
+            inner_rect: Rect::new(0, 0, 20, 3),
+            scrollbar_rect: None,
+            borders: Borders::NONE,
+            is_focused: false,
+        };
+        let toggle = pane_backside_toggle_area(&info, Rect::default(), false).unwrap();
+        assert_eq!(toggle.rect, Rect::new(17, 0, 3, 1));
+        assert_eq!(toggle.face_rect, Rect::new(11, 0, 6, 1));
+        app.view.pane_backside_toggle_areas = vec![toggle];
+        app.view.pane_infos = vec![info.clone()];
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, &ws, frame))
+            .unwrap();
+        assert_eq!(
+            buffer_text(terminal.backend().buffer(), Rect::new(11, 0, 9, 1)),
+            "FRONT [⇄]"
+        );
+
+        // The face name is dropped before the control is, and the threshold follows its length.
+        let narrow = PaneInfo {
+            rect: Rect::new(0, 0, 8, 3),
+            ..info
+        };
+        let narrow_back = pane_backside_toggle_area(&narrow, Rect::default(), true).unwrap();
+        assert_eq!(narrow_back.face_rect, Rect::new(0, 0, 5, 1));
+        let narrow_front = pane_backside_toggle_area(&narrow, Rect::default(), false).unwrap();
+        assert_eq!(narrow_front.rect, Rect::new(5, 0, 3, 1));
+        assert_eq!(narrow_front.face_rect, Rect::default());
+
+        let tiny = PaneInfo {
+            rect: Rect::new(0, 0, 2, 3),
+            ..info
+        };
+        assert!(pane_backside_toggle_area(&tiny, Rect::default(), true).is_none());
+    }
+
+    #[test]
+    fn border_title_stops_before_toggle_and_keeps_full_width_without_one() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 24, 3);
+        let ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        let info = PaneInfo {
+            id: pane_id,
+            rect: Rect::new(0, 0, 24, 3),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::ALL,
+            is_focused: false,
+        };
+        let toggle = pane_backside_toggle_area(&info, Rect::default(), false).unwrap();
+        let control = toggle.rect;
+        app.view.pane_infos = vec![info];
+        app.view.pane_backside_toggle_areas = vec![toggle];
+
+        let terminal_id = ws.tabs[0].panes[&pane_id].attached_terminal_id.clone();
+        let mut terminal_state = TerminalState::new(terminal_id.clone(), "/tmp".into());
+        terminal_state.set_manual_label("abcdefghijklmnopqrst".into());
+        app.terminals.insert(terminal_id, terminal_state);
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(24, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, &ws, frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        assert_eq!(buffer_text(buffer, control), PANE_BACKSIDE_TOGGLE_CONTROL);
+        assert_eq!(
+            buffer_text(buffer, Rect::new(1, 0, control.x.saturating_sub(1), 1)),
+            " FRONT · abcdefgh… "
+        );
+
+        app.view.pane_backside_toggle_areas.clear();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, &ws, frame))
+            .unwrap();
+
+        assert_eq!(
+            buffer_text(terminal.backend().buffer(), Rect::new(1, 0, 22, 1)),
+            " FRONT · abcdefghijk… "
+        );
+    }
+
+    #[test]
+    fn narrow_toggle_renders_exactly_without_overwriting_border_or_content() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        let info = PaneInfo {
+            id: pane_id,
+            rect: Rect::new(0, 0, 5, 3),
+            inner_rect: Rect::new(1, 1, 3, 1),
+            scrollbar_rect: None,
+            borders: Borders::ALL,
+            is_focused: true,
+        };
+        app.view.pane_backside_toggle_areas =
+            vec![pane_backside_toggle_area(&info, Rect::default(), false).unwrap()];
+        app.view.pane_infos = vec![info];
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(5, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.buffer_mut()[(2, 1)].set_symbol("x");
+                render_pane_chrome(&app, &ws, frame);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        assert_eq!(
+            buffer_text(buffer, Rect::new(1, 0, 3, 1)),
+            PANE_BACKSIDE_TOGGLE_CONTROL
+        );
+        assert_eq!(buffer[(0, 0)].symbol(), "┌");
+        assert_eq!(buffer[(4, 0)].symbol(), "┐");
+        assert_eq!(buffer[(0, 1)].symbol(), "│");
+        assert_eq!(buffer[(4, 1)].symbol(), "│");
+        assert_eq!(buffer[(2, 1)].symbol(), "x");
+    }
+
+    #[test]
+    fn bordered_controls_render_front_back_and_focus_priority() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.pane_gaps = true;
+        let mut ws = Workspace::test_new("test");
+        let first = ws.tabs[0].root_pane;
+        let second = ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(first);
+        assert!(ws.toggle_backside(second));
+        app.view.pane_infos =
+            apply_pane_chrome(ws.tabs[0].layout.panes(Rect::new(0, 0, 40, 6)), true, true);
+        let front_info = app
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == first)
+            .unwrap()
+            .clone();
+        let back_info = app
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == second)
+            .unwrap()
+            .clone();
+        app.view.pane_backside_toggle_areas = vec![
+            pane_backside_toggle_area(&front_info, Rect::default(), false).unwrap(),
+            pane_backside_toggle_area(&back_info, Rect::default(), true).unwrap(),
+        ];
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 6)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, &ws, frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let front_toggle = app.view.pane_backside_toggle_areas[0].rect;
+        let back_toggle = app.view.pane_backside_toggle_areas[1].rect;
+
+        // The arrow is identical on both faces; only the border title names the face.
+        assert_eq!(
+            buffer_text(buffer, front_toggle),
+            PANE_BACKSIDE_TOGGLE_CONTROL
+        );
+        assert_eq!(
+            buffer_text(buffer, back_toggle),
+            PANE_BACKSIDE_TOGGLE_CONTROL
+        );
+        assert_eq!(
+            buffer_text(
+                buffer,
+                Rect::new(front_info.rect.x.saturating_add(1), front_info.rect.y, 7, 1)
+            ),
+            " FRONT "
+        );
+        assert_eq!(
+            buffer_text(
+                buffer,
+                Rect::new(back_info.rect.x.saturating_add(1), back_info.rect.y, 6, 1)
+            ),
+            " BACK "
+        );
+        assert_eq!(
+            buffer[(front_toggle.x, front_toggle.y)].style().fg,
+            Some(app.palette.accent)
+        );
+        assert_eq!(
+            buffer[(back_toggle.x, back_toggle.y)].style().fg,
             Some(app.palette.mauve)
+        );
+    }
+
+    #[test]
+    fn zoomed_bordered_pane_keeps_toggle_in_top_right() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let mut ws = Workspace::test_new("test");
+        ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.zoomed = true;
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        app.selected = 0;
+
+        let (buffer, _) = crate::server::render_stream::render_virtual_with_runtime_registry(
+            &mut app,
+            &TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 40, 8),
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let pane = app.view.pane_infos.first().unwrap();
+        assert_eq!(pane.borders, Borders::ALL);
+        let toggle = app.view.pane_backside_toggle_areas[0].rect;
+        assert_eq!(buffer_text(&buffer, toggle), PANE_BACKSIDE_TOGGLE_CONTROL);
+        assert_eq!(
+            buffer_text(&buffer, Rect::new(pane.rect.x + 1, pane.rect.y, 7, 1)),
+            " FRONT "
         );
     }
 
