@@ -727,6 +727,16 @@ pub enum ViewLayout {
     Mobile,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneBacksideToggleArea {
+    pub pane_id: PaneId,
+    /// The `[⇄]` control itself, and the only clickable part.
+    pub rect: Rect,
+    /// Face name drawn beside the control in slots without a border title; empty otherwise.
+    /// Its width covers the separating cell before the control as well as the name itself.
+    pub face_rect: Rect,
+}
+
 /// TUI-only projection of a server-owned rule proposal.
 ///
 /// Keeping this adapter type in presentation state avoids coupling rendering to
@@ -880,7 +890,24 @@ pub struct ViewState {
     pub mobile_menu_hit_area: Rect,
     pub toast_hit_area: Rect,
     pub pane_infos: Vec<PaneInfo>,
+    pub pane_backside_toggle_areas: Vec<PaneBacksideToggleArea>,
     pub split_borders: Vec<SplitBorder>,
+}
+
+impl ViewState {
+    pub(crate) fn terminal_content_overlay_rects(&self) -> Vec<Rect> {
+        let mut rects = vec![self.review_panel_handle_rect];
+        if self.review_panel_overlay {
+            rects.push(self.review_panel_rect);
+        }
+        rects.extend(
+            self.pane_backside_toggle_areas
+                .iter()
+                .flat_map(|toggle| [toggle.rect, toggle.face_rect]),
+        );
+        rects.retain(|rect| rect.width > 0 && rect.height > 0);
+        rects
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1214,6 +1241,7 @@ pub(crate) enum DragTarget {
         pane_id: crate::layout::PaneId,
         grab_row_offset: u16,
     },
+    PaneBacksideToggle,
     ReleaseNotesScrollbar {
         grab_row_offset: u16,
     },
@@ -1913,6 +1941,7 @@ impl AppState {
                 mobile_menu_hit_area: Rect::default(),
                 toast_hit_area: Rect::default(),
                 pane_infos: Vec::new(),
+                pane_backside_toggle_areas: Vec::new(),
                 split_borders: Vec::new(),
             },
             drag: None,

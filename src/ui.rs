@@ -39,7 +39,9 @@ use self::mobile::{
 use self::navigator::render_navigator_overlay;
 pub(crate) use self::onboarding::onboarding_welcome_continue_rect;
 use self::onboarding::render_onboarding_overlay;
-use self::panes::{compute_pane_infos, render_panes, resize_tab_panes};
+use self::panes::{
+    compute_pane_backside_toggle_areas, compute_pane_infos, render_panes, resize_tab_panes,
+};
 pub(crate) use self::release_notes::{
     product_announcement_display_lines, release_notes_close_button_rect,
     release_notes_display_lines, release_notes_wrapped_line_count, PRODUCT_ANNOUNCEMENT_MODAL_SIZE,
@@ -311,6 +313,8 @@ fn compute_view_internal(
     ));
     let review_panel_hit_areas =
         compute_review_panel_hit_areas(&app.review_panel, review_layout.panel_rect);
+    let pane_backside_toggle_areas =
+        compute_pane_backside_toggle_areas(app, &pane_infos, handle_slot.rect);
 
     let toast_hit_area = app
         .toast
@@ -343,6 +347,7 @@ fn compute_view_internal(
         mobile_menu_hit_area: Rect::default(),
         toast_hit_area,
         pane_infos,
+        pane_backside_toggle_areas,
         split_borders,
     };
     app.sync_copy_mode_search_geometry();
@@ -407,6 +412,8 @@ fn compute_mobile_view(
     ));
     let review_panel_hit_areas =
         compute_review_panel_hit_areas(&app.review_panel, review_layout.panel_rect);
+    let pane_backside_toggle_areas =
+        compute_pane_backside_toggle_areas(app, &pane_infos, handle_slot.rect);
 
     let toast_hit_area = app
         .toast
@@ -432,6 +439,7 @@ fn compute_mobile_view(
         mobile_menu_hit_area: header_hits.menu,
         toast_hit_area,
         pane_infos,
+        pane_backside_toggle_areas,
         split_borders,
     };
     app.sync_copy_mode_search_geometry();
@@ -734,6 +742,133 @@ mod tests {
             app.view.mobile_menu_hit_area.x + app.view.mobile_menu_hit_area.width,
             handle.x
         );
+    }
+
+    /// The review handle and the pane backside controls are projected by different modules onto
+    /// the same frame, so these pin the seams between them.
+    fn app_with_collapsed_handle_and_backside(area: Rect) -> crate::app::state::AppState {
+        let mut app = crate::app::state::AppState::test_new();
+        app.mode = Mode::Terminal;
+        let mut ws = Workspace::test_new("one");
+        let pane_id = ws.tabs[0].root_pane;
+        assert!(ws.toggle_backside(pane_id));
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        app.selected = 0;
+        app.review_panel
+            .replace_proposals(vec![crate::app::state::RuleProposalView {
+                proposal_id: "proposal-1".to_string(),
+                rule_text: "Always verify the focused pane.".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 1,
+            }]);
+        app.review_panel.close_manually();
+        compute_view(&mut app, area);
+        app
+    }
+
+    #[test]
+    fn the_collapsed_handle_never_overlaps_a_pane_backside_control() {
+        for area in [
+            Rect::new(0, 0, 90, 20),
+            Rect::new(0, 0, 70, 12),
+            Rect::new(0, 0, 44, 20),
+        ] {
+            let app = app_with_collapsed_handle_and_backside(area);
+            let handle = app.view.review_panel_handle_rect;
+            assert!(handle.width > 0, "{area:?} produced no handle");
+            assert!(
+                !app.view.pane_backside_toggle_areas.is_empty(),
+                "{area:?} produced no backside control"
+            );
+            for toggle in &app.view.pane_backside_toggle_areas {
+                assert!(
+                    !handle.intersects(toggle.rect),
+                    "{area:?}: handle {handle:?} covers control {:?}",
+                    toggle.rect
+                );
+                if toggle.face_rect.width > 0 {
+                    assert!(
+                        !handle.intersects(toggle.face_rect),
+                        "{area:?}: handle {handle:?} covers face name {:?}",
+                        toggle.face_rect
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_borderless_slot_keeps_its_face_name_clear_of_the_handle_fallback() {
+        // With the tab bar hidden the handle drops onto the terminal's top row, which is also the
+        // top pane's control row — the one case where the two really compete for cells.
+        let area = Rect::new(0, 0, 90, 20);
+        let mut app = crate::app::state::AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.hide_tab_bar_when_single_tab = true;
+        app.pane_borders = false;
+        let mut ws = Workspace::test_new("one");
+        let pane_id = ws.tabs[0].root_pane;
+        assert!(ws.toggle_backside(pane_id));
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        app.selected = 0;
+        app.review_panel
+            .replace_proposals(vec![crate::app::state::RuleProposalView {
+                proposal_id: "proposal-1".to_string(),
+                rule_text: "Always verify the focused pane.".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 1,
+            }]);
+        app.review_panel.close_manually();
+        compute_view(&mut app, area);
+
+        let handle = app.view.review_panel_handle_rect;
+        assert_eq!(app.view.tab_bar_rect, Rect::default());
+        assert_eq!(handle.y, app.view.terminal_area.y);
+        let toggle = app
+            .view
+            .pane_backside_toggle_areas
+            .first()
+            .expect("backside control");
+        assert_eq!(handle.y, toggle.rect.y, "the fallback shares the pane row");
+        assert!(!handle.intersects(toggle.rect));
+        assert!(!handle.intersects(toggle.face_rect));
+        assert_eq!(
+            toggle.rect.x + toggle.rect.width,
+            handle.x,
+            "the control gives way to the handle instead of being covered"
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal.draw(|frame| render(&app, frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = (handle.x..handle.x + handle.width)
+            .map(|x| buffer[(x, handle.y)].symbol())
+            .collect::<String>();
+        assert!(row.contains("[‹ Rules 1]"), "handle was overdrawn: {row:?}");
+    }
+
+    #[test]
+    fn retained_overlay_rects_cover_both_the_handle_and_the_backside_controls() {
+        let area = Rect::new(0, 0, 90, 20);
+        let app = app_with_collapsed_handle_and_backside(area);
+        let overlays = app.view.terminal_content_overlay_rects();
+        let handle = app.view.review_panel_handle_rect;
+
+        assert!(
+            overlays.contains(&handle),
+            "retained frames would patch over the handle"
+        );
+        for toggle in &app.view.pane_backside_toggle_areas {
+            assert!(
+                overlays.contains(&toggle.rect),
+                "retained frames would patch over a backside control"
+            );
+        }
+        assert!(overlays
+            .iter()
+            .all(|rect| rect.width > 0 && rect.height > 0));
     }
 
     #[test]
