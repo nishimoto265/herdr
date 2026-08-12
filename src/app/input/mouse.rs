@@ -59,6 +59,12 @@ pub(super) enum MouseAction {
     },
 }
 
+pub(super) enum ReviewPanelMouseAction {
+    Ignored,
+    Consumed,
+    Decision(crate::review_agent::RuleProposalDecisionRequest),
+}
+
 enum MobileMouseResult {
     Ignored,
     Consumed,
@@ -66,6 +72,85 @@ enum MobileMouseResult {
 }
 
 impl AppState {
+    pub(super) fn handle_review_panel_mouse(
+        &mut self,
+        mouse: MouseEvent,
+    ) -> ReviewPanelMouseAction {
+        let rail = self.view.review_panel_rail_rect;
+        let in_rail = rect_contains(rail, mouse.column, mouse.row);
+        let panel = self.view.review_panel_rect;
+        let in_panel = rect_contains(panel, mouse.column, mouse.row);
+
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) && in_rail {
+            self.review_panel.open_manually();
+            return ReviewPanelMouseAction::Consumed;
+        }
+        if !in_panel {
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                self.review_panel.keyboard_focused = false;
+            }
+            return ReviewPanelMouseAction::Ignored;
+        }
+
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.review_panel.scroll = self
+                    .review_panel
+                    .scroll
+                    .saturating_sub(self.mouse_scroll_lines);
+                ReviewPanelMouseAction::Consumed
+            }
+            MouseEventKind::ScrollDown => {
+                self.review_panel.scroll = self
+                    .review_panel
+                    .scroll
+                    .saturating_add(self.mouse_scroll_lines)
+                    .min(crate::ui::max_review_panel_scroll(
+                        &self.review_panel,
+                        panel,
+                    ));
+                ReviewPanelMouseAction::Consumed
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.review_panel.keyboard_focused = true;
+                if rect_contains(
+                    self.view.review_panel_hit_areas.close,
+                    mouse.column,
+                    mouse.row,
+                ) {
+                    self.review_panel.close_manually();
+                    return ReviewPanelMouseAction::Consumed;
+                }
+                if self.request_review_proposal_decision.is_none() {
+                    if let Some(hit) = self
+                        .view
+                        .review_panel_hit_areas
+                        .decisions
+                        .iter()
+                        .find(|hit| rect_contains(hit.rect, mouse.column, mouse.row))
+                    {
+                        if let Some(selected) =
+                            self.review_panel.proposals.iter().position(|proposal| {
+                                proposal.proposal_id == hit.request.proposal_id.as_str()
+                            })
+                        {
+                            self.review_panel.selected = selected;
+                        }
+                        return ReviewPanelMouseAction::Decision(hit.request.clone());
+                    }
+                }
+                ReviewPanelMouseAction::Consumed
+            }
+            MouseEventKind::Up(_) | MouseEventKind::Drag(_) | MouseEventKind::Moved => {
+                ReviewPanelMouseAction::Consumed
+            }
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
+                ReviewPanelMouseAction::Consumed
+            }
+            MouseEventKind::Down(_) => ReviewPanelMouseAction::Consumed,
+        }
+    }
+
     pub(crate) fn handle_pane_mouse_only(
         &mut self,
         terminal_runtimes: &TerminalRuntimeRegistry,
@@ -1874,6 +1959,129 @@ mod tests {
         });
     }
 
+    #[test]
+    fn review_panel_rail_and_decision_hits_use_request_boundary() {
+        let mut app = app_for_mouse_test();
+        app.state
+            .review_panel
+            .replace_proposals(vec![crate::app::state::RuleProposalView {
+                proposal_id: "proposal-1".to_string(),
+                rule_text: "Always verify the focused pane.".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 4,
+            }]);
+        app.state.review_panel.close_manually();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
+
+        let rail = app.state.view.review_panel_rail_rect;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            rail.x + 1,
+            rail.y + 1,
+        ));
+        assert!(app.state.review_panel.is_expanded());
+
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
+        let approve = app
+            .state
+            .view
+            .review_panel_hit_areas
+            .decisions
+            .iter()
+            .find(|hit| hit.request.decision == crate::review_agent::RuleProposalDecision::Approve)
+            .expect("approve hit area")
+            .rect;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            approve.x,
+            approve.y,
+        ));
+
+        let request = app
+            .state
+            .request_review_proposal_decision
+            .as_ref()
+            .expect("decision request");
+        assert_eq!(request.proposal_id.as_str(), "proposal-1");
+        assert_eq!(request.expected_revision, 4);
+        assert_eq!(
+            request.decision,
+            crate::review_agent::RuleProposalDecision::Approve
+        );
+        assert_eq!(app.state.review_panel.proposals.len(), 1);
+    }
+
+    #[test]
+    fn mobile_review_overlay_consumes_decision_click_before_terminal() {
+        let mut app = app_for_mouse_test();
+        app.state
+            .review_panel
+            .replace_proposals(vec![crate::app::state::RuleProposalView {
+                proposal_id: "mobile-proposal".to_string(),
+                rule_text: "Keep provider paths private.".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 2,
+            }]);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 44, 20));
+        assert_eq!(app.state.view.layout, ViewLayout::Mobile);
+        assert!(app.state.view.review_panel_overlay);
+        assert_eq!(app.state.view.terminal_area.width, 44);
+
+        let approve = app
+            .state
+            .view
+            .review_panel_hit_areas
+            .decisions
+            .iter()
+            .find(|hit| hit.request.decision == crate::review_agent::RuleProposalDecision::Approve)
+            .expect("mobile approve hit")
+            .rect;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            approve.x,
+            approve.y,
+        ));
+        assert_eq!(
+            app.state
+                .request_review_proposal_decision
+                .as_ref()
+                .map(|request| request.proposal_id.as_str()),
+            Some("mobile-proposal")
+        );
+    }
+
+    #[test]
+    fn settings_overlay_does_not_send_clicks_to_review_decisions_behind_it() {
+        let mut app = app_for_mouse_test();
+        app.state
+            .review_panel
+            .replace_proposals(vec![crate::app::state::RuleProposalView {
+                proposal_id: "proposal-behind-settings".to_string(),
+                rule_text: "Do not approve through an overlay.".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 1,
+            }]);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
+        let approve = app
+            .state
+            .view
+            .review_panel_hit_areas
+            .decisions
+            .iter()
+            .find(|hit| hit.request.decision == crate::review_agent::RuleProposalDecision::Approve)
+            .expect("approve hit area")
+            .rect;
+        app.state.mode = Mode::Settings;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            approve.x,
+            approve.y,
+        ));
+
+        assert!(app.state.request_review_proposal_decision.is_none());
+    }
+
     #[tokio::test]
     async fn terminal_wheel_uses_configured_mouse_scroll_lines() {
         let mut app = app_for_mouse_test();
@@ -3506,6 +3714,30 @@ mod tests {
 
         assert_eq!(app.state.active, Some(1));
         assert_eq!(app.state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn mobile_switch_button_right_edge_is_not_covered_by_collapsed_review_rail() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 44, 20));
+        assert_eq!(app.state.view.layout, ViewLayout::Mobile);
+        assert!(!app.state.review_panel.is_expanded());
+        let switch = app.state.view.mobile_menu_hit_area;
+        let right_edge = switch.x + switch.width - 1;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            right_edge,
+            switch.y,
+        ));
+
+        assert_eq!(app.state.mode, Mode::Navigate);
+        assert!(!app.state.review_panel.is_expanded());
     }
 
     #[test]

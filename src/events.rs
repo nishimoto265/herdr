@@ -155,6 +155,15 @@ pub enum AppEvent {
         stderr: String,
         error: Option<String>,
     },
+    ReviewTranscriptResolved {
+        assignment: crate::review_agent::delivery::AssignmentIdentity,
+        resolution: crate::review_agent::conversation::TranscriptResolution,
+    },
+    ReviewCompletionProbed {
+        assignment: crate::review_agent::delivery::AssignmentIdentity,
+        expected_checkpoint: crate::review_agent::conversation::TranscriptCheckpoint,
+        readiness: crate::review_agent::conversation::CompletionReadiness,
+    },
     /// Background `git worktree add` completed.
     WorktreeAddFinished(Box<WorktreeAddResult>),
     /// Background `git worktree remove` completed.

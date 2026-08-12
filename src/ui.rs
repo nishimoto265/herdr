@@ -13,6 +13,7 @@ mod navigator;
 mod onboarding;
 mod panes;
 mod release_notes;
+mod review_agent;
 mod scrollbar;
 mod settings;
 mod sidebar;
@@ -45,6 +46,11 @@ pub(crate) use self::release_notes::{
     RELEASE_NOTES_MODAL_SIZE,
 };
 use self::release_notes::{render_product_announcement_overlay, render_release_notes_overlay};
+use self::review_agent::render_review_panel;
+pub(crate) use self::review_agent::{
+    compute_review_panel_hit_areas, compute_review_panel_layout, max_review_panel_scroll,
+    review_panel_page_height, selected_review_card_scroll,
+};
 pub(crate) use self::scrollbar::{
     pane_scrollbar_rect, release_notes_scrollbar_rect, scrollbar_offset_from_drag_row,
     scrollbar_offset_from_row, scrollbar_thumb_grab_offset, should_show_scrollbar,
@@ -223,8 +229,12 @@ fn compute_view_internal(
             .clamp(app.sidebar_min_width, app.sidebar_max_width)
     };
 
-    let [sidebar_area, main_area] =
+    let [sidebar_area, available_main_area] =
         Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(1)]).areas(area);
+
+    let review_layout =
+        compute_review_panel_layout(available_main_area, app.review_panel.is_expanded(), false);
+    let main_area = review_layout.terminal_rect;
 
     let (tab_bar_rect, terminal_area) = app
         .active
@@ -288,6 +298,13 @@ fn compute_view_internal(
         resize_background_tab_panes_for_desktop(app, terminal_runtimes, main_area, cell_size);
     }
 
+    app.review_panel.scroll = app.review_panel.scroll.min(max_review_panel_scroll(
+        &app.review_panel,
+        review_layout.panel_rect,
+    ));
+    let review_panel_hit_areas =
+        compute_review_panel_hit_areas(&app.review_panel, review_layout.panel_rect);
+
     let toast_hit_area = app
         .toast
         .as_ref()
@@ -311,6 +328,10 @@ fn compute_view_internal(
         tab_scroll_right_hit_area: tab_bar_view.scroll_right_hit_area,
         new_tab_hit_area: tab_bar_view.new_tab_hit_area,
         terminal_area,
+        review_panel_rect: review_layout.panel_rect,
+        review_panel_rail_rect: review_layout.rail_rect,
+        review_panel_overlay: review_layout.overlay,
+        review_panel_hit_areas,
         mobile_header_rect: Rect::default(),
         mobile_menu_hit_area: Rect::default(),
         toast_hit_area,
@@ -365,6 +386,14 @@ fn compute_mobile_view(
         resize_background_tab_panes_to_area(app, terminal_runtimes, terminal_area, cell_size);
     }
     let header_hits = compute_mobile_header_hit_areas(app, header_rect);
+    let review_layout =
+        compute_review_panel_layout(terminal_area, app.review_panel.is_expanded(), true);
+    app.review_panel.scroll = app.review_panel.scroll.min(max_review_panel_scroll(
+        &app.review_panel,
+        review_layout.panel_rect,
+    ));
+    let review_panel_hit_areas =
+        compute_review_panel_hit_areas(&app.review_panel, review_layout.panel_rect);
 
     let toast_hit_area = app
         .toast
@@ -382,6 +411,10 @@ fn compute_mobile_view(
         tab_scroll_right_hit_area: Rect::default(),
         new_tab_hit_area: Rect::default(),
         terminal_area,
+        review_panel_rect: review_layout.panel_rect,
+        review_panel_rail_rect: review_layout.rail_rect,
+        review_panel_overlay: review_layout.overlay,
+        review_panel_hit_areas,
         mobile_header_rect: header_rect,
         mobile_menu_hit_area: header_hits.menu,
         toast_hit_area,
@@ -420,6 +453,7 @@ pub fn render_with_runtime_registry(
         render_tab_bar(app, frame, tab_bar_area);
     }
     render_panes(app, terminal_runtimes, frame, terminal_area);
+    render_review_panel(app, frame);
 
     // Ambient notifications sit above panes, but below interactive overlays.
     render_notifications(app, frame, terminal_area);

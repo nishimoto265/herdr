@@ -1365,6 +1365,30 @@ fn current_codex_prompt_index(lines: &[&str]) -> Option<usize> {
     Some(prompt_index)
 }
 
+pub(crate) fn input_prompt_visible(agent: Agent, content: &str) -> bool {
+    input_prompt_snapshot(agent, content).is_some()
+}
+
+pub(crate) fn input_prompt_snapshot(agent: Agent, content: &str) -> Option<String> {
+    match agent {
+        Agent::Codex => {
+            let lines = content.lines().collect::<Vec<_>>();
+            current_codex_prompt_index(&lines).map(|index| lines[index].to_string())
+        }
+        Agent::Claude => prompt_box_body(content)
+            .filter(|body| body.lines().any(|line| line.trim_start().starts_with('❯')))
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+pub(crate) fn startup_confirmation_visible(agent: Agent, content: &str) -> bool {
+    agent == Agent::Codex
+        && content.contains("Do you trust the contents of this directory?")
+        && content.contains("1. Yes, continue")
+        && content.contains("Press enter to continue")
+}
+
 fn codex_prompt_line(line: &str) -> bool {
     line == "›" || line.starts_with("› ")
 }

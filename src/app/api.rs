@@ -8,6 +8,7 @@ mod layouts;
 mod panes;
 pub(crate) mod plugins;
 mod responses;
+mod review_agent;
 mod session;
 mod tabs;
 mod workspaces;
@@ -58,6 +59,14 @@ impl App {
     }
 
     pub(crate) fn handle_internal_event(&mut self, ev: AppEvent) {
+        if self.handle_review_background_event(&ev) {
+            return;
+        }
+        if let AppEvent::PaneDied { pane_id } = &ev {
+            if self.handle_review_pane_died(*pane_id) {
+                return;
+            }
+        }
         if let AppEvent::ClipboardWrite { content } = ev {
             #[cfg(not(test))]
             crate::selection::write_osc52_bytes(&content);
@@ -154,7 +163,7 @@ impl App {
             if let Some(update) = self.state.publish_pane_process_exit_if_agent(*pane_id) {
                 self.sync_full_lifecycle_authority_detection_pauses();
                 self.refresh_new_herdr_toast_context_for_update(&update, &previous_toast);
-                self.emit_pane_state_update(&update);
+                self.process_pane_state_update(&update);
                 self.emit_terminal_or_system_agent_notifications(std::slice::from_ref(&update));
             }
             if self.runtime_exit_action(*pane_id) == RuntimeExitAction::RespawnShell
@@ -265,7 +274,7 @@ impl App {
         }
         for update in &pane_updates {
             self.refresh_new_herdr_toast_context_for_update(update, &previous_toast);
-            self.emit_pane_state_update(update);
+            self.process_pane_state_update(update);
         }
         self.sync_agent_metadata_deadline();
         if let Some((
@@ -488,8 +497,22 @@ impl App {
         }
     }
 
-    fn respawn_shell_for_launch_pane(&mut self, pane_id: crate::layout::PaneId) -> bool {
-        let Some((ws_idx, pane_state)) = self.find_pane(pane_id) else {
+    pub(crate) fn respawn_shell_for_launch_pane(&mut self, pane_id: crate::layout::PaneId) -> bool {
+        let pane = self.find_pane(pane_id).or_else(|| {
+            self.state
+                .workspaces
+                .iter()
+                .enumerate()
+                .find_map(|(ws_idx, workspace)| {
+                    workspace.tabs.iter().find_map(|tab| {
+                        tab.backsides
+                            .values()
+                            .find(|backside| backside.pane_id == pane_id)
+                            .map(|backside| (ws_idx, &backside.pane))
+                    })
+                })
+        });
+        let Some((ws_idx, pane_state)) = pane else {
             return false;
         };
         let terminal_id = pane_state.attached_terminal_id.clone();
@@ -541,6 +564,9 @@ impl App {
     }
 
     pub(crate) fn emit_pane_state_update(&mut self, update: &crate::app::actions::PaneStateUpdate) {
+        if self.is_backside_update(update) {
+            return;
+        }
         let Some(pane_id) = self.public_pane_id(update.ws_idx, update.pane_id) else {
             return;
         };
@@ -607,6 +633,9 @@ impl App {
         };
 
         for update in pane_updates {
+            if self.is_backside_update(update) {
+                continue;
+            }
             let is_active_tab = self
                 .state
                 .pane_is_in_active_tab(update.ws_idx, update.pane_id);
@@ -1028,6 +1057,12 @@ impl App {
             }
             Method::PluginPaneClose(params) => {
                 return self.handle_plugin_pane_close(request.id, params);
+            }
+            Method::ReviewRuleProposalSubmit(params) => {
+                return self.handle_review_rule_proposal_submit(request.id, params);
+            }
+            Method::ReviewRuleProposalList(params) => {
+                return self.handle_review_rule_proposal_list(request.id, params);
             }
             _ => {
                 return responses::encode_error(

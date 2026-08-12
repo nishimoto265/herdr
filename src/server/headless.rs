@@ -114,6 +114,7 @@ fn apply_terminal_dirty_patch(
     frame: &mut FrameData,
     area: Rect,
     patch: crate::pane::TerminalDirtyPatch,
+    overlay_rects: &[Rect],
 ) -> bool {
     if !rect_fits_frame(area, frame) {
         return false;
@@ -129,7 +130,18 @@ fn apply_terminal_dirty_patch(
         if end > frame.cells.len() {
             return false;
         }
-        frame.cells[start..end].clone_from_slice(&row_cells);
+        for (local_x, cell) in row_cells.into_iter().enumerate() {
+            let frame_x = area.x + local_x as u16;
+            if overlay_rects.iter().any(|rect| {
+                frame_x >= rect.x
+                    && frame_x < rect.x.saturating_add(rect.width)
+                    && frame_y >= rect.y
+                    && frame_y < rect.y.saturating_add(rect.height)
+            }) {
+                continue;
+            }
+            frame.cells[start + local_x] = cell;
+        }
     }
     true
 }
@@ -707,6 +719,14 @@ impl HeadlessServer {
             self.reload_server_config(true);
             needs_render = true;
             crate::render_prof::event("full_render_cause.config_reload");
+        }
+
+        if let Some(request) = self.app.state.request_review_proposal_decision.take() {
+            if let Err(err) = self.app.decide_review_rule_proposal(request) {
+                error!(err = %err, "failed to apply review rule proposal decision");
+            }
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.review_proposal_decision");
         }
 
         needs_render
@@ -1594,6 +1614,9 @@ impl HeadlessServer {
         &mut self,
         update: &crate::app::actions::PaneStateUpdate,
     ) {
+        if self.app.is_backside_update(update) {
+            return;
+        }
         if self.app.state.toast_config.delay_seconds != 0 {
             return;
         }
@@ -1874,6 +1897,10 @@ impl HeadlessServer {
                 self.sync_foreground_client_state();
                 self.app.handle_internal_event(ev);
 
+                if self.app.is_backside_pane_id(pane_id_val) {
+                    return true;
+                }
+
                 // Forward sound notification to clients when server-side sound policy allows it.
                 let is_active_tab = self
                     .app
@@ -2089,7 +2116,7 @@ impl HeadlessServer {
                     .state
                     .publish_pane_process_exit_if_agent(pane_id_val)
                 {
-                    self.app.emit_pane_state_update(&update);
+                    self.app.process_pane_state_update(&update);
                     self.forward_pane_state_update_notifications_to_clients(&update);
                 }
 
@@ -3178,6 +3205,11 @@ impl HeadlessServer {
         }
 
         let mut touched = false;
+        let mut overlay_rects = vec![self.app.state.view.review_panel_rail_rect];
+        if self.app.state.view.review_panel_overlay {
+            overlay_rects.push(self.app.state.view.review_panel_rect);
+        }
+        overlay_rects.retain(|rect| rect.width > 0 && rect.height > 0);
         for info in pane_infos {
             if !rect_fits_frame(info.inner_rect, &frame) {
                 retained_fallback!("pane_rect_outside_frame");
@@ -3202,7 +3234,12 @@ impl HeadlessServer {
                     if dirty_patch_intersects_hyperlinks(&frame, info.inner_rect, &patch) {
                         retained_fallback!("hyperlink_intersection");
                     }
-                    if !apply_terminal_dirty_patch(&mut frame, info.inner_rect, patch) {
+                    if !apply_terminal_dirty_patch(
+                        &mut frame,
+                        info.inner_rect,
+                        patch,
+                        &overlay_rects,
+                    ) {
                         retained_fallback!("patch_apply_failed");
                     }
                     touched = true;
@@ -3607,6 +3644,11 @@ impl HeadlessServer {
     fn handle_scheduled_tasks_headless(&mut self, now: Instant, geometry_dirty: bool) -> bool {
         let mut changed = false;
 
+        self.app.submit_due_review_prompts(now);
+        self.app.retry_pending_review_actions();
+        self.app.retry_failed_review_backends(now);
+        self.app.reconcile_review_backend_readiness(now);
+
         self.app.sync_headless_animation_timer(now);
 
         // No resize polling needed — server has no terminal.
@@ -3723,7 +3765,7 @@ impl HeadlessServer {
             for update in self.app.state.expire_agent_metadata_at(deadline, now) {
                 self.app
                     .refresh_new_herdr_toast_context_for_update(&update, &previous_toast);
-                self.app.emit_pane_state_update(&update);
+                self.app.process_pane_state_update(&update);
             }
             self.app.sync_agent_metadata_deadline();
             changed = true;
@@ -5520,6 +5562,72 @@ next_tab = ""
 
         assert!(!server.handle_scheduled_tasks_headless(now, false));
         assert_eq!(server.app.next_agent_manifest_update_check, None);
+    }
+
+    #[tokio::test]
+    async fn headless_scheduled_tasks_submit_review_prompt_after_deadline() {
+        let mut server = test_headless_server();
+        server.app.review_agent_config.enabled = true;
+        server.app.review_agent_config.backend_profile_id = "review-profile".into();
+        server.app.review_agent_config.backend_argv = vec!["review-agent".into()];
+        server.app.review_agent_config.readiness_attempts = 2;
+        server.app.review_agent_config.readiness_interval_ms = 10;
+        let workspace = crate::workspace::Workspace::test_new("review-submit");
+        let front_id = workspace.tabs[0].root_pane;
+        let backside = &workspace.tabs[0].backsides[&front_id];
+        let back_id = backside.pane_id;
+        let terminal_id = backside.pane.attached_terminal_id.clone();
+        server.app.state.workspaces = vec![workspace];
+        server.app.state.ensure_test_terminals();
+        server
+            .app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(
+                Some(crate::detect::Agent::Codex),
+                crate::detect::AgentState::Idle,
+            );
+        let (runtime, mut input_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 1);
+        runtime.test_process_pty_bytes("\x1b[2J\x1b[Hstartup\r\n› [HERDR] ".as_bytes());
+        server
+            .app
+            .terminal_runtimes
+            .insert(terminal_id.clone(), runtime);
+        let sent_at = Instant::now();
+        let pending = crate::app::ReviewBackendPendingSubmit::new("assignment".into(), sent_at);
+        server
+            .app
+            .review_backend_pending_submits
+            .insert(back_id, pending);
+
+        server.handle_scheduled_tasks_headless(sent_at, false);
+        assert_eq!(
+            input_rx.try_recv().unwrap(),
+            Bytes::from_static(b"assignment")
+        );
+        server
+            .app
+            .terminal_runtimes
+            .get(&terminal_id)
+            .unwrap()
+            .test_process_pty_bytes("\x1b[2J\x1b[Hstartup\r\n› [HERDR] assignment".as_bytes());
+        let body_seen_at = sent_at + Duration::from_millis(1);
+        server.handle_scheduled_tasks_headless(body_seen_at, false);
+        assert!(input_rx.try_recv().is_err());
+
+        server.handle_scheduled_tasks_headless(body_seen_at + Duration::from_millis(10), false);
+        assert_eq!(input_rx.try_recv().unwrap(), Bytes::from_static(b"\r"));
+        assert!(!server
+            .app
+            .review_backend_pending_submits
+            .contains_key(&back_id));
+
+        if let Some(runtime) = server.app.terminal_runtimes.remove(&terminal_id) {
+            runtime.shutdown();
+        }
     }
 
     #[tokio::test]

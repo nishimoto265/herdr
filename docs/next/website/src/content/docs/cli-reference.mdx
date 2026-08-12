@@ -1,6 +1,6 @@
 ---
 title: CLI reference
-description: Herdr commands for sessions, workspaces, tabs, panes, notifications, agents, waits, integrations, and status.
+description: Herdr commands for sessions, workspaces, tabs, panes, notifications, review proposals, agents, waits, integrations, and status.
 ---
 
 Herdr’s CLI talks to the running server over the same local socket API used by integrations and agents.
@@ -100,6 +100,17 @@ herdr notification show <title> [--body TEXT] [--position top-left|top-right|bot
 ```
 
 `notification show` uses the configured `[ui.toast]` delivery. `--position` only affects in-app Herdr toasts. `--sound` defaults to `none`; `done` and `request` play the existing finished and needs-attention sounds only when the notification is shown.
+
+## Review proposals
+
+```bash
+herdr review submit --rule TEXT --target ID --fingerprint ID --source-event ID
+herdr review list [--status pending|approved|rejected]
+```
+
+`review submit` records one rule observation. `--rule` is the proposed rule text, `--target` identifies the agent it applies to, `--fingerprint` identifies equivalent observations, and `--source-event` identifies the completed conversation event that produced it. The target must match the configured Review Agent profile, and the source event must be the conversation Herdr is currently delivering to the backend; fabricated, stale, or unrelated event IDs are rejected. Two distinct source events with the same fingerprint create one pending proposal; repeated event IDs are ignored. `review list` prints the stored proposals and can filter them by status.
+
+Approval and rejection are available through Herdr's right-side review panel. The CLI intentionally provides no approve or reject command. This is a supported-workflow boundary rather than a security sandbox: the configured backend is a trusted local executable running with your user account's permissions.
 
 ## Sessions
 

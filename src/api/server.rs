@@ -385,6 +385,8 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PluginPaneOpen(_) => "plugin.pane.open",
         Method::PluginPaneFocus(_) => "plugin.pane.focus",
         Method::PluginPaneClose(_) => "plugin.pane.close",
+        Method::ReviewRuleProposalSubmit(_) => "review.rule_proposal.submit",
+        Method::ReviewRuleProposalList(_) => "review.rule_proposal.list",
     }
 }
 

@@ -34,6 +34,7 @@ pub(super) fn command() -> Command {
         .subcommand(worktree_command())
         .subcommand(tab_command())
         .subcommand(notification_command())
+        .subcommand(review_command())
         .subcommand(agent_command())
         .subcommand(pane_command())
         .subcommand(wait_command())
@@ -251,6 +252,24 @@ fn notification_command() -> Command {
                     "bottom-right",
                 ]))
                 .arg(option("sound", "SOUND").value_parser(["none", "done", "request"])),
+        )
+}
+
+fn review_command() -> Command {
+    Command::new("review")
+        .about("Submit and inspect Review Agent rule proposals")
+        .subcommand(
+            Command::new("submit")
+                .about("Record one rule observation")
+                .arg(option("rule", "TEXT").required(true))
+                .arg(option("target", "ID").required(true))
+                .arg(option("fingerprint", "ID").required(true))
+                .arg(option("source-event", "ID").required(true)),
+        )
+        .subcommand(
+            Command::new("list")
+                .about("List rule proposals")
+                .arg(option("status", "STATUS").value_parser(["pending", "approved", "rejected"])),
         )
 }
 

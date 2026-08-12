@@ -10,27 +10,6 @@ fn registry_path() -> PathBuf {
     crate::session::data_dir().join("plugins.json")
 }
 
-fn save_json_to_path<T: serde::Serialize + ?Sized>(path: &Path, value: &T) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(value)?;
-    let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, &json)?;
-    #[cfg(windows)]
-    if path.exists() {
-        if let Err(err) = std::fs::remove_file(path) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(err);
-        }
-    }
-    if let Err(err) = std::fs::rename(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(err);
-    }
-    Ok(())
-}
-
 /// Atomically write `plugins.json` next to `session.json`.
 pub fn save(plugins: &[InstalledPluginInfo]) -> std::io::Result<()> {
     let path = registry_path();
@@ -38,7 +17,7 @@ pub fn save(plugins: &[InstalledPluginInfo]) -> std::io::Result<()> {
 }
 
 pub fn save_to_path(path: &Path, plugins: &[InstalledPluginInfo]) -> std::io::Result<()> {
-    save_json_to_path(path, plugins)
+    super::io::save_replace_json_to_path(path, plugins)
 }
 
 /// Load `plugins.json`.  Returns an empty vec on any failure so a corrupt or

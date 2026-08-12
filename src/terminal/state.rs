@@ -861,6 +861,13 @@ impl TerminalState {
         })
     }
 
+    pub(crate) fn review_session_id_hint(&self) -> Option<String> {
+        self.current_session_identity_for_persistence()
+            .and_then(|(_, _, kind, value)| {
+                (kind == crate::agent_resume::AgentSessionRefKind::Id).then_some(value)
+            })
+    }
+
     fn current_session_owner_conflicts(&self, source: &str, agent_label: &str) -> bool {
         self.current_session_identity_for_persistence().is_some_and(
             |(current_source, current_agent, _, _)| {

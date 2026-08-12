@@ -13,6 +13,9 @@ mod config_io;
 mod creation;
 mod ids;
 mod input;
+mod review_agent;
+#[cfg(test)]
+pub(crate) use review_agent::ReviewBackendPendingSubmit;
 mod runtime;
 mod runtime_mutations;
 mod session;
@@ -143,6 +146,19 @@ pub struct App {
     /// even when an App-internal drain consumes the event before the forwarding drain.
     pub(crate) local_input_source_switch: bool,
     pub(crate) config_reloaded_from_disk: bool,
+    pub(crate) review_delivery: crate::review_agent::delivery::ReviewDeliveryState,
+    pub(crate) pending_review_actions: Vec<crate::review_agent::delivery::DeliveryAction>,
+    pub(crate) review_agent_config: crate::config::ReviewAgentConfig,
+    pub(crate) review_backend_pending_starts:
+        HashMap<crate::layout::PaneId, review_agent::ReviewBackendStart>,
+    pub(crate) review_backend_retries:
+        HashMap<crate::layout::PaneId, review_agent::ReviewBackendRetry>,
+    pub(crate) review_backend_ready_since: HashMap<crate::layout::PaneId, (String, Instant)>,
+    pub(crate) review_backend_pending_submits:
+        HashMap<crate::layout::PaneId, review_agent::ReviewBackendPendingSubmit>,
+    pub(crate) review_backend_startup_confirmed: HashSet<crate::layout::PaneId>,
+    #[cfg(test)]
+    pub(crate) review_delivery_persist_failure: bool,
     prefix_input_source: Box<dyn crate::platform::PrefixInputSource>,
 }
 
@@ -219,6 +235,14 @@ fn load_plugin_registry(no_session: bool) -> crate::app::state::InstalledPluginR
         .into_iter()
         .map(|plugin| (plugin.plugin_id.clone(), plugin))
         .collect()
+}
+
+fn load_review_agent_state(no_session: bool) -> crate::review_agent::ReviewAgentState {
+    if no_session {
+        crate::review_agent::ReviewAgentState::default()
+    } else {
+        crate::persist::review_agent::load()
+    }
 }
 
 fn agent_panel_sort_from_config(
@@ -522,6 +546,7 @@ impl App {
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
             request_reload_config: false,
+            request_review_proposal_decision: None,
             request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
@@ -554,6 +579,7 @@ impl App {
             tab_scroll: 0,
             tab_scroll_follow_active: true,
             mobile_switcher_scroll: 0,
+            review_panel: state::ReviewPanelState::default(),
             view: state::ViewState {
                 layout: state::ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
@@ -564,6 +590,10 @@ impl App {
                 tab_scroll_right_hit_area: Rect::default(),
                 new_tab_hit_area: Rect::default(),
                 terminal_area: Rect::default(),
+                review_panel_rect: Rect::default(),
+                review_panel_rail_rect: Rect::default(),
+                review_panel_overlay: false,
+                review_panel_hit_areas: state::ReviewPanelHitAreas::default(),
                 mobile_header_rect: Rect::default(),
                 mobile_menu_hit_area: Rect::default(),
                 toast_hit_area: Rect::default(),
@@ -646,6 +676,7 @@ impl App {
             agent_manifest_update_status: crate::detect::manifest_update::load_status(),
             integration_install_messages: Vec::new(),
             installed_plugins: load_plugin_registry(no_session),
+            review_agent: load_review_agent_state(no_session),
             plugin_panes: std::collections::HashMap::new(),
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
@@ -690,7 +721,12 @@ impl App {
                 .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
         });
 
-        Self {
+        let review_delivery = if !no_session && config.review_agent.runtime_enabled() {
+            crate::persist::review_delivery::load()
+        } else {
+            crate::review_agent::delivery::ReviewDeliveryState::default()
+        };
+        let mut app = Self {
             config_diagnostic_deadline: None,
             toast_deadline: None,
             copy_feedback_deadline: None,
@@ -740,8 +776,24 @@ impl App {
             local_terminal_notifications: true,
             local_input_source_switch: true,
             config_reloaded_from_disk: false,
+            review_delivery,
+            pending_review_actions: Vec::new(),
+            review_agent_config: config.review_agent.clone(),
+            review_backend_pending_starts: HashMap::new(),
+            review_backend_retries: HashMap::new(),
+            review_backend_ready_since: HashMap::new(),
+            review_backend_pending_submits: HashMap::new(),
+            review_backend_startup_confirmed: HashSet::new(),
+            #[cfg(test)]
+            review_delivery_persist_failure: false,
             prefix_input_source: Box::new(crate::platform::RealPrefixInputSource::default()),
+        };
+        app.state.sync_review_panel_proposals(false);
+        if app.review_agent_config.runtime_enabled() {
+            let actions = app.reconcile_review_delivery_actions();
+            app.queue_review_actions_after_persist(actions);
         }
+        app
     }
 
     #[cfg(unix)]
@@ -786,6 +838,13 @@ impl App {
         app.state.workspaces = workspaces;
         app.state.terminals = terminals;
         app.terminal_runtimes = runtimes.into();
+        let review_agent = load_review_agent_state(false);
+        let review_delivery = if app.review_agent_config.runtime_enabled() {
+            crate::persist::review_delivery::load()
+        } else {
+            crate::review_agent::delivery::ReviewDeliveryState::default()
+        };
+        app.install_handoff_review_state(review_agent, review_delivery);
         app.state.active = snapshot
             .active
             .filter(|&idx| idx < app.state.workspaces.len());
@@ -822,6 +881,13 @@ impl App {
     #[cfg(unix)]
     pub fn assume_handoff_ownership(&mut self) {
         self.terminal_runtimes.assume_handoff_ownership();
+        if self.review_agent_config.runtime_enabled() {
+            // Imported PTYs must not be replaced before the old server commits
+            // ownership. Reconcile here, immediately after ownership transfers
+            // and before the imported readers are unpaused.
+            let actions = self.reconcile_review_delivery_actions();
+            self.queue_review_actions_after_persist(actions);
+        }
     }
 
     fn request_full_redraw(&mut self) {
@@ -982,6 +1048,13 @@ impl App {
             if self.state.request_reload_config {
                 self.state.request_reload_config = false;
                 self.reload_config();
+                needs_render = true;
+            }
+
+            if let Some(request) = self.state.request_review_proposal_decision.take() {
+                if let Err(err) = self.decide_review_rule_proposal(request) {
+                    tracing::warn!(err = %err, "failed to apply review rule proposal decision");
+                }
                 needs_render = true;
             }
 
@@ -1425,6 +1498,34 @@ impl App {
 
         if !invalid_section("advanced") {
             self.state.pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes;
+        }
+
+        if !invalid_section("review_agent") {
+            let previous_review_agent_config = self.review_agent_config.clone();
+            let was_runtime_enabled = previous_review_agent_config.runtime_enabled();
+            if let Some(diagnostic) = config.review_agent.diagnostic() {
+                diagnostics.push(format!("{diagnostic}; review agent runtime disabled"));
+            }
+            self.review_agent_config = config.review_agent.clone();
+            let runtime_enabled = self.review_agent_config.runtime_enabled();
+            if !runtime_enabled {
+                if was_runtime_enabled {
+                    self.stop_review_backends_for_config_disable();
+                } else {
+                    self.review_delivery =
+                        crate::review_agent::delivery::ReviewDeliveryState::default();
+                }
+            } else if was_runtime_enabled
+                && previous_review_agent_config != self.review_agent_config
+            {
+                self.restart_review_backends_for_config_change();
+            } else {
+                let actions = self.reconcile_review_delivery_actions();
+                self.queue_review_actions_after_persist(actions);
+            }
+            if let Err(error) = self.persist_review_delivery() {
+                tracing::warn!(error = %error, "failed to persist review delivery after config reload");
+            }
         }
 
         if !invalid_section("update") {

@@ -107,6 +107,12 @@ Every pane slot has a resident backside from the moment the pane is created. The
 
 Backsides are intentionally excluded from the normal agent list, workspace status rollups, and blocked/done notifications. A backside can still be addressed directly through the pane API by appending `:back` to the front pane ID, for example `my-workspace:p1:back`.
 
+## Review rule proposals
+
+When the Review Agent has pending rule proposals, Herdr opens a collapsible panel on the right. Click the right-side rail to open it manually. The panel folds automatically after the last pending proposal is approved or rejected, and you can close it manually at any time.
+
+With the review panel focused, use `up`/`k` and `down`/`j` to select a proposal, `pageup` and `pagedown` to scroll, `a` to approve, `r` to reject, and `esc` or `q` to close the panel. The supported CLI intentionally has no approve or reject command.
+
 A few `ctrl+alt` chords are taken elsewhere. Avoid these:
 
 | Chord | Owned by |

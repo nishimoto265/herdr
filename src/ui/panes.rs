@@ -686,12 +686,21 @@ fn render_pane_backside_badges(
             _ => " BACK ",
         };
         let badge_width = display_width(badge) as u16;
-        let right = info
+        let mut right = info
             .rect
             .x
             .saturating_add(info.rect.width)
             .min(area.x.saturating_add(area.width));
         let y = info.rect.y;
+        let rail = app.view.review_panel_rail_rect;
+        if rail.width > 0
+            && y >= rail.y
+            && y < rail.y.saturating_add(rail.height)
+            && rail.x < right
+            && rail.x.saturating_add(rail.width) > info.rect.x
+        {
+            right = right.min(rail.x);
+        }
         if y < area.y
             || y >= area.y.saturating_add(area.height)
             || right < area.x.saturating_add(badge_width)
@@ -1367,6 +1376,126 @@ mod tests {
             .content()
             .iter()
             .all(|cell| cell.style().bg != Some(app.palette.mauve)));
+    }
+
+    #[test]
+    fn retained_render_marks_backside_and_keeps_focused_front_accent() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let mut ws = Workspace::test_new("test");
+        let back_pane_id = ws.tabs[0].root_pane;
+        let front_pane_id = ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(front_pane_id);
+        assert!(ws.toggle_backside(back_pane_id));
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        app.selected = 0;
+
+        let (buffer, _) = crate::server::render_stream::render_virtual_with_runtime_registry(
+            &mut app,
+            &TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 100, 20),
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let back_info = app
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == back_pane_id)
+            .unwrap();
+        let front_info = app
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == front_pane_id)
+            .unwrap();
+
+        assert_eq!(
+            buffer[(back_info.rect.x, back_info.rect.y.saturating_add(1))]
+                .style()
+                .fg,
+            Some(app.palette.mauve)
+        );
+        assert_eq!(
+            buffer[(back_info.rect.x.saturating_add(2), back_info.rect.y)].symbol(),
+            "B"
+        );
+        assert_eq!(
+            buffer[(back_info.rect.x.saturating_add(2), back_info.rect.y)]
+                .style()
+                .fg,
+            Some(app.palette.mauve)
+        );
+        assert_eq!(
+            buffer[(front_info.rect.x.saturating_add(2), front_info.rect.y)]
+                .style()
+                .fg,
+            Some(app.palette.accent)
+        );
+
+        app.workspaces[0].tabs[0].layout.focus_pane(back_pane_id);
+        let (focused_buffer, _) =
+            crate::server::render_stream::render_virtual_with_runtime_registry(
+                &mut app,
+                &TerminalRuntimeRegistry::new(),
+                Rect::new(0, 0, 100, 20),
+                true,
+                crate::kitty_graphics::HostCellSize::default(),
+            );
+        let focused_back = app
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == back_pane_id)
+            .unwrap();
+        assert!(focused_back.is_focused);
+        assert_eq!(
+            focused_buffer[(focused_back.rect.x, focused_back.rect.y.saturating_add(1))]
+                .style()
+                .fg,
+            Some(app.palette.accent)
+        );
+        assert_eq!(
+            focused_buffer[(focused_back.rect.x.saturating_add(2), focused_back.rect.y)]
+                .style()
+                .fg,
+            Some(app.palette.accent)
+        );
+        assert_eq!(
+            focused_buffer[(focused_back.rect.x.saturating_add(2), focused_back.rect.y)].symbol(),
+            "B"
+        );
+    }
+
+    #[test]
+    fn retained_single_pane_backside_badge_stays_visible_beside_review_rail() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let mut ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        assert!(ws.toggle_backside(pane_id));
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        app.selected = 0;
+
+        let (buffer, _) = crate::server::render_stream::render_virtual_with_runtime_registry(
+            &mut app,
+            &TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 40, 10),
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let pane = app.view.pane_infos.first().unwrap();
+        let rail = app.view.review_panel_rail_rect;
+        assert!(pane.borders.is_empty());
+        assert!(rail.width > 0);
+        let badge_x = rail.x.saturating_sub(5);
+        assert_eq!(buffer[(badge_x, pane.rect.y)].symbol(), "B");
+        assert_eq!(
+            buffer[(badge_x, pane.rect.y)].style().bg,
+            Some(app.palette.mauve)
+        );
     }
 
     #[test]
