@@ -3641,6 +3641,61 @@ mod tests {
     }
 
     #[test]
+    fn api_pane_focus_renders_a_focused_backside_with_the_front_accent() {
+        let mut app = app_with_linked_worktree();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        let backside_slot = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        assert!(app.state.workspaces[0].toggle_backside(backside_slot));
+        let public_pane_id = app.public_pane_id(0, backside_slot).unwrap();
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req".into(),
+            method: crate::api::schema::Method::PaneFocus(PaneTarget {
+                pane_id: public_pane_id,
+            }),
+        });
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::PaneInfo { .. }));
+        let (buffer, _) = crate::server::render_stream::render_virtual_with_runtime_registry(
+            &mut app.state,
+            &app.terminal_runtimes,
+            ratatui::layout::Rect::new(0, 0, 100, 20),
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let pane = app
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|pane| pane.id == backside_slot)
+            .expect("focused backside slot");
+
+        assert!(pane.is_focused);
+        assert_eq!(
+            buffer[(pane.rect.x, pane.rect.y.saturating_add(1))]
+                .style()
+                .fg,
+            Some(app.state.palette.accent)
+        );
+        assert_eq!(
+            buffer[(pane.rect.x.saturating_add(2), pane.rect.y)]
+                .style()
+                .fg,
+            Some(app.state.palette.accent)
+        );
+        assert_eq!(
+            buffer[(pane.rect.x.saturating_add(2), pane.rect.y)].symbol(),
+            "B"
+        );
+    }
+
+    #[test]
     fn api_pane_focus_marks_already_focused_done_pane_seen() {
         let mut app = app_with_linked_worktree();
         app.state.active = Some(0);

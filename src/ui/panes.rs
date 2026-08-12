@@ -1104,6 +1104,281 @@ mod tests {
     }
 
     #[test]
+    fn focused_backside_border_uses_accent_and_preserves_the_back_title() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 16, 3);
+        let mut ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        assert!(ws.toggle_backside(pane_id));
+        app.view.pane_infos = vec![PaneInfo {
+            id: pane_id,
+            rect: Rect::new(0, 0, 16, 3),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::ALL,
+            is_focused: true,
+        }];
+
+        let back_terminal_id = ws.tabs[0].backsides[&pane_id]
+            .pane
+            .attached_terminal_id
+            .clone();
+        let mut terminal_state = TerminalState::new(back_terminal_id.clone(), "/tmp".into());
+        terminal_state.set_manual_label("reviewer".into());
+        app.terminals.insert(back_terminal_id, terminal_state);
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(16, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, &ws, frame))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 1)].style().fg, Some(app.palette.accent));
+        assert_eq!(buffer[(2, 0)].symbol(), "B");
+        assert_eq!(buffer[(2, 0)].style().fg, Some(app.palette.accent));
+        assert!(buffer.content().iter().any(|cell| cell.symbol() == "r"));
+    }
+
+    #[test]
+    fn focused_zoomed_backside_keeps_back_title_with_accent_border() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let mut ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(pane_id);
+        ws.tabs[0].zoomed = true;
+        assert!(ws.toggle_backside(pane_id));
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        app.view.pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 16, 3),
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let ws = &app.workspaces[0];
+        assert_eq!(app.view.pane_infos.len(), 1);
+        assert!(app.view.pane_infos[0].borders.contains(Borders::TOP));
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(16, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, ws, frame))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 1)].style().fg, Some(app.palette.accent));
+        assert_eq!(buffer[(2, 0)].symbol(), "B");
+        assert_eq!(buffer[(2, 0)].style().fg, Some(app.palette.accent));
+    }
+
+    #[test]
+    fn multi_pane_backside_and_front_borders_keep_distinct_colours() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let mut ws = Workspace::test_new("test");
+        let back_pane_id = ws.tabs[0].root_pane;
+        let front_pane_id = ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(front_pane_id);
+        assert!(ws.toggle_backside(back_pane_id));
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        app.view.pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 16, 3),
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let ws = &app.workspaces[0];
+        let back_info = app
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == back_pane_id)
+            .unwrap();
+        let front_info = app
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == front_pane_id)
+            .unwrap();
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(16, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, ws, frame))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[(back_info.rect.x, back_info.rect.y.saturating_add(1))]
+                .style()
+                .fg,
+            Some(app.palette.mauve)
+        );
+        assert_eq!(
+            buffer[(back_info.rect.x.saturating_add(2), back_info.rect.y)]
+                .style()
+                .fg,
+            Some(app.palette.mauve)
+        );
+        assert_eq!(
+            buffer[(
+                front_info
+                    .rect
+                    .x
+                    .saturating_add(front_info.rect.width)
+                    .saturating_sub(1),
+                front_info.rect.y.saturating_add(1)
+            )]
+                .style()
+                .fg,
+            Some(app.palette.accent)
+        );
+    }
+
+    #[test]
+    fn borderless_backside_renders_a_mauve_back_badge_without_changing_pane_geometry() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.pane_borders = false;
+        app.view.terminal_area = Rect::new(0, 0, 12, 3);
+        let mut ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        assert!(ws.toggle_backside(pane_id));
+        let pane_rect = Rect::new(0, 0, 12, 3);
+        app.view.pane_infos = vec![PaneInfo {
+            id: pane_id,
+            rect: pane_rect,
+            inner_rect: pane_rect,
+            scrollbar_rect: None,
+            borders: Borders::NONE,
+            is_focused: true,
+        }];
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, &ws, frame))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(6, 0)].symbol(), " ");
+        assert_eq!(buffer[(7, 0)].symbol(), "B");
+        assert_eq!(buffer[(10, 0)].symbol(), "K");
+        assert_eq!(buffer[(7, 0)].style().bg, Some(app.palette.mauve));
+        assert_eq!(app.view.pane_infos[0].rect, pane_rect);
+        assert_eq!(app.view.pane_infos[0].inner_rect, pane_rect);
+    }
+
+    #[test]
+    fn single_pane_backside_renders_a_mauve_back_badge() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let mut ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        assert!(ws.toggle_backside(pane_id));
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        app.view.pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 12, 3),
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let ws = &app.workspaces[0];
+        assert!(app.view.pane_infos[0].borders.is_empty());
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, ws, frame))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(7, 0)].symbol(), "B");
+        assert_eq!(buffer[(7, 0)].style().bg, Some(app.palette.mauve));
+    }
+
+    #[test]
+    fn narrow_backside_badges_fit_or_hide_without_overflowing() {
+        for (width, expected) in [(3, "   "), (4, "BACK"), (5, " BACK"), (6, " BACK ")] {
+            let mut app = AppState::test_new();
+            app.mode = Mode::Terminal;
+            app.pane_borders = false;
+            let mut ws = Workspace::test_new("test");
+            let pane_id = ws.tabs[0].root_pane;
+            assert!(ws.toggle_backside(pane_id));
+            app.view.pane_infos = vec![PaneInfo {
+                id: pane_id,
+                rect: Rect::new(0, 0, width, 3),
+                inner_rect: Rect::new(0, 0, width, 3),
+                scrollbar_rect: None,
+                borders: Borders::NONE,
+                is_focused: true,
+            }];
+
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 3)).unwrap();
+            terminal
+                .draw(|frame| render_pane_chrome(&app, &ws, frame))
+                .unwrap();
+
+            let buffer = terminal.backend().buffer();
+            let rendered = (0..width)
+                .map(|x| buffer[(x, 0)].symbol())
+                .collect::<String>();
+            assert_eq!(rendered, expected);
+            let badge_background = buffer[(width.saturating_sub(1), 0)].style().bg;
+            if width >= 4 {
+                assert_eq!(badge_background, Some(app.palette.mauve));
+            } else {
+                assert_ne!(badge_background, Some(app.palette.mauve));
+            }
+        }
+    }
+
+    #[test]
+    fn front_pane_without_borders_has_no_back_badge() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.pane_borders = false;
+        app.view.terminal_area = Rect::new(0, 0, 12, 3);
+        let ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        app.view.pane_infos = vec![PaneInfo {
+            id: pane_id,
+            rect: Rect::new(0, 0, 12, 3),
+            inner_rect: Rect::new(0, 0, 12, 3),
+            scrollbar_rect: None,
+            borders: Borders::NONE,
+            is_focused: true,
+        }];
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 3)).unwrap();
+        terminal
+            .draw(|frame| render_pane_chrome(&app, &ws, frame))
+            .unwrap();
+
+        assert!(terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .all(|cell| cell.style().bg != Some(app.palette.mauve)));
+    }
+
+    #[test]
     fn retained_render_marks_backside_and_keeps_focused_front_accent() {
         let mut app = AppState::test_new();
         app.mode = Mode::Terminal;
