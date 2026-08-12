@@ -63,10 +63,10 @@ pub(super) enum MouseAction {
     },
 }
 
-pub(super) enum ReviewPanelMouseAction {
+pub(super) enum ShitsujiPanelMouseAction {
     Ignored,
     Consumed,
-    Decision(crate::review_agent::RuleProposalDecisionRequest),
+    Decision(crate::shitsuji_agent::RuleProposalDecisionRequest),
 }
 
 enum MobileMouseResult {
@@ -76,75 +76,75 @@ enum MobileMouseResult {
 }
 
 impl AppState {
-    pub(super) fn handle_review_panel_mouse(
+    pub(super) fn handle_shitsuji_panel_mouse(
         &mut self,
         mouse: MouseEvent,
-    ) -> ReviewPanelMouseAction {
-        let handle = self.view.review_panel_handle_rect;
+    ) -> ShitsujiPanelMouseAction {
+        let handle = self.view.shitsuji_panel_handle_rect;
         let in_handle = rect_contains(handle, mouse.column, mouse.row);
-        let panel = self.view.review_panel_rect;
+        let panel = self.view.shitsuji_panel_rect;
         let in_panel = rect_contains(panel, mouse.column, mouse.row);
 
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) && in_handle {
-            self.review_panel.open_manually();
-            return ReviewPanelMouseAction::Consumed;
+            self.shitsuji_panel.open_manually();
+            return ShitsujiPanelMouseAction::Consumed;
         }
         if !in_panel {
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                self.review_panel.keyboard_focused = false;
+                self.shitsuji_panel.keyboard_focused = false;
             }
-            return ReviewPanelMouseAction::Ignored;
+            return ShitsujiPanelMouseAction::Ignored;
         }
 
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                self.review_panel.scroll = self
-                    .review_panel
+                self.shitsuji_panel.scroll = self
+                    .shitsuji_panel
                     .scroll
                     .saturating_sub(self.mouse_scroll_lines);
-                ReviewPanelMouseAction::Consumed
+                ShitsujiPanelMouseAction::Consumed
             }
             MouseEventKind::ScrollDown => {
-                self.review_panel.scroll = self
-                    .review_panel
+                self.shitsuji_panel.scroll = self
+                    .shitsuji_panel
                     .scroll
                     .saturating_add(self.mouse_scroll_lines)
-                    .min(crate::ui::max_review_panel_scroll(
-                        &self.review_panel,
+                    .min(crate::ui::max_shitsuji_panel_scroll(
+                        &self.shitsuji_panel,
                         panel,
                     ));
-                ReviewPanelMouseAction::Consumed
+                ShitsujiPanelMouseAction::Consumed
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                self.review_panel.keyboard_focused = true;
+                self.shitsuji_panel.keyboard_focused = true;
                 if rect_contains(
-                    self.view.review_panel_hit_areas.close,
+                    self.view.shitsuji_panel_hit_areas.close,
                     mouse.column,
                     mouse.row,
                 ) {
-                    self.review_panel.close_manually();
-                    return ReviewPanelMouseAction::Consumed;
+                    self.shitsuji_panel.close_manually();
+                    return ShitsujiPanelMouseAction::Consumed;
                 }
-                if self.request_review_proposal_decision.is_none() {
+                if self.request_shitsuji_proposal_decision.is_none() {
                     if let Some(hit) = self
                         .view
-                        .review_panel_hit_areas
+                        .shitsuji_panel_hit_areas
                         .decisions
                         .iter()
                         .find(|hit| rect_contains(hit.rect, mouse.column, mouse.row))
                     {
-                        return ReviewPanelMouseAction::Decision(hit.request.clone());
+                        return ShitsujiPanelMouseAction::Decision(hit.request.clone());
                     }
                 }
-                ReviewPanelMouseAction::Consumed
+                ShitsujiPanelMouseAction::Consumed
             }
             MouseEventKind::Up(_) | MouseEventKind::Drag(_) | MouseEventKind::Moved => {
-                ReviewPanelMouseAction::Consumed
+                ShitsujiPanelMouseAction::Consumed
             }
             MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
-                ReviewPanelMouseAction::Consumed
+                ShitsujiPanelMouseAction::Consumed
             }
-            MouseEventKind::Down(_) => ReviewPanelMouseAction::Consumed,
+            MouseEventKind::Down(_) => ShitsujiPanelMouseAction::Consumed,
         }
     }
 
@@ -2016,14 +2016,14 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state
-            .review_panel
+            .shitsuji_panel
             .replace_proposals(vec![crate::app::state::RuleProposalView {
                 proposal_id: "proposal-1".to_string(),
                 rule_text: "Always verify the focused pane.".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 4,
             }]);
-        app.state.review_panel.close_manually();
+        app.state.shitsuji_panel.close_manually();
 
         let (buffer, _) = crate::server::render_stream::render_virtual_with_runtime_registry(
             &mut app.state,
@@ -2032,7 +2032,7 @@ mod tests {
             true,
             crate::kitty_graphics::HostCellSize::default(),
         );
-        let handle = app.state.view.review_panel_handle_rect;
+        let handle = app.state.view.shitsuji_panel_handle_rect;
         assert!(handle.width > 0);
         let row = (handle.x..handle.x + handle.width)
             .map(|x| buffer[(x, handle.y)].symbol())
@@ -2056,14 +2056,14 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state
-            .review_panel
+            .shitsuji_panel
             .replace_proposals(vec![crate::app::state::RuleProposalView {
                 proposal_id: "proposal-1".to_string(),
                 rule_text: "Always verify the focused pane.".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 4,
             }]);
-        app.state.review_panel.close_manually();
+        app.state.shitsuji_panel.close_manually();
 
         let (buffer, _) = crate::server::render_stream::render_virtual_with_runtime_registry(
             &mut app.state,
@@ -2072,7 +2072,7 @@ mod tests {
             true,
             crate::kitty_graphics::HostCellSize::default(),
         );
-        let handle = app.state.view.review_panel_handle_rect;
+        let handle = app.state.view.shitsuji_panel_handle_rect;
         let tab_bar = app.state.view.tab_bar_rect;
         assert!(handle.width > 0);
         assert_eq!(app.state.view.tab_scroll_right_hit_area, Rect::default());
@@ -2096,17 +2096,17 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state
-            .review_panel
+            .shitsuji_panel
             .replace_proposals(vec![crate::app::state::RuleProposalView {
                 proposal_id: "proposal-1".to_string(),
                 rule_text: "Always verify the focused pane.".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 4,
             }]);
-        app.state.review_panel.close_manually();
+        app.state.shitsuji_panel.close_manually();
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 65, 20));
 
-        let handle = app.state.view.review_panel_handle_rect;
+        let handle = app.state.view.shitsuji_panel_handle_rect;
         let terminal = app.state.view.terminal_area;
         assert_eq!(app.state.view.tab_bar_rect, Rect::default());
         assert!(handle.width > 0);
@@ -2118,11 +2118,11 @@ mod tests {
             handle.x + 1,
             handle.y,
         ));
-        assert!(app.state.review_panel.is_expanded());
+        assert!(app.state.shitsuji_panel.is_expanded());
     }
 
     #[test]
-    fn an_expanded_review_panel_moves_tab_controls_back_to_the_right() {
+    fn an_expanded_shitsuji_panel_moves_tab_controls_back_to_the_right() {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("one");
         ws.tabs[0].set_custom_name("very-long-one".into());
@@ -2133,18 +2133,18 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state
-            .review_panel
+            .shitsuji_panel
             .replace_proposals(vec![crate::app::state::RuleProposalView {
                 proposal_id: "proposal-1".to_string(),
                 rule_text: "Always verify the focused pane.".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 4,
             }]);
 
-        app.state.review_panel.close_manually();
+        app.state.shitsuji_panel.close_manually();
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 90, 20));
         let tab_bar = app.state.view.tab_bar_rect;
-        let handle = app.state.view.review_panel_handle_rect;
+        let handle = app.state.view.shitsuji_panel_handle_rect;
         assert!(
             app.state.view.tab_scroll_right_hit_area.width > 0,
             "needs overflow"
@@ -2156,9 +2156,9 @@ mod tests {
             "tab controls must stay out of the reserved columns"
         );
 
-        app.state.review_panel.open_manually();
+        app.state.shitsuji_panel.open_manually();
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 90, 20));
-        assert_eq!(app.state.view.review_panel_handle_rect, Rect::default());
+        assert_eq!(app.state.view.shitsuji_panel_handle_rect, Rect::default());
         assert!(
             app.state.view.new_tab_hit_area.x > collapsed_new_tab.x,
             "expanding the panel should release the reserved columns"
@@ -2166,7 +2166,7 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_review_handle_leaves_global_tab_controls_clickable() {
+    fn collapsed_shitsuji_handle_leaves_global_tab_controls_clickable() {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("one");
         ws.tabs[0].set_custom_name("very-long-one".into());
@@ -2176,17 +2176,17 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state
-            .review_panel
+            .shitsuji_panel
             .replace_proposals(vec![crate::app::state::RuleProposalView {
                 proposal_id: "proposal-1".to_string(),
                 rule_text: "Always verify the focused pane.".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 4,
             }]);
-        app.state.review_panel.close_manually();
+        app.state.shitsuji_panel.close_manually();
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 65, 20));
 
-        let handle = app.state.view.review_panel_handle_rect;
+        let handle = app.state.view.shitsuji_panel_handle_rect;
         let tab_bar = app.state.view.tab_bar_rect;
         assert!(handle.width > 0);
         assert!(tab_bar.width > 0);
@@ -2215,53 +2215,55 @@ mod tests {
     }
 
     #[test]
-    fn review_panel_handle_and_decision_hits_use_request_boundary() {
+    fn shitsuji_panel_handle_and_decision_hits_use_request_boundary() {
         let mut app = app_for_mouse_test();
         app.state
-            .review_panel
+            .shitsuji_panel
             .replace_proposals(vec![crate::app::state::RuleProposalView {
                 proposal_id: "proposal-1".to_string(),
                 rule_text: "Always verify the focused pane.".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 4,
             }]);
-        app.state.review_panel.close_manually();
+        app.state.shitsuji_panel.close_manually();
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
 
-        let handle = app.state.view.review_panel_handle_rect;
+        let handle = app.state.view.shitsuji_panel_handle_rect;
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             handle.x + 1,
             handle.y,
         ));
-        assert!(app.state.review_panel.is_expanded());
+        assert!(app.state.shitsuji_panel.is_expanded());
 
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
-        let close = app.state.view.review_panel_hit_areas.close;
+        let close = app.state.view.shitsuji_panel_hit_areas.close;
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             close.x,
             close.y,
         ));
-        assert!(!app.state.review_panel.is_expanded());
+        assert!(!app.state.shitsuji_panel.is_expanded());
 
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
-        let handle = app.state.view.review_panel_handle_rect;
+        let handle = app.state.view.shitsuji_panel_handle_rect;
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             handle.x + 1,
             handle.y,
         ));
-        assert!(app.state.review_panel.is_expanded());
+        assert!(app.state.shitsuji_panel.is_expanded());
 
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
         let approve = app
             .state
             .view
-            .review_panel_hit_areas
+            .shitsuji_panel_hit_areas
             .decisions
             .iter()
-            .find(|hit| hit.request.decision == crate::review_agent::RuleProposalDecision::Approve)
+            .find(|hit| {
+                hit.request.decision == crate::shitsuji_agent::RuleProposalDecision::Approve
+            })
             .expect("approve hit area")
             .rect;
         app.handle_mouse(mouse(
@@ -2272,23 +2274,23 @@ mod tests {
 
         let request = app
             .state
-            .request_review_proposal_decision
+            .request_shitsuji_proposal_decision
             .as_ref()
             .expect("decision request");
         assert_eq!(request.proposal_id.as_str(), "proposal-1");
         assert_eq!(request.expected_revision, 4);
         assert_eq!(
             request.decision,
-            crate::review_agent::RuleProposalDecision::Approve
+            crate::shitsuji_agent::RuleProposalDecision::Approve
         );
-        app.state.request_review_proposal_decision = None;
+        app.state.request_shitsuji_proposal_decision = None;
         let reject = app
             .state
             .view
-            .review_panel_hit_areas
+            .shitsuji_panel_hit_areas
             .decisions
             .iter()
-            .find(|hit| hit.request.decision == crate::review_agent::RuleProposalDecision::Reject)
+            .find(|hit| hit.request.decision == crate::shitsuji_agent::RuleProposalDecision::Reject)
             .expect("reject hit area")
             .rect;
         app.handle_mouse(mouse(
@@ -2298,56 +2300,57 @@ mod tests {
         ));
         assert_eq!(
             app.state
-                .request_review_proposal_decision
+                .request_shitsuji_proposal_decision
                 .as_ref()
                 .map(|request| request.decision),
-            Some(crate::review_agent::RuleProposalDecision::Reject)
+            Some(crate::shitsuji_agent::RuleProposalDecision::Reject)
         );
-        assert_eq!(app.state.review_panel.proposals.len(), 1);
+        assert_eq!(app.state.shitsuji_panel.proposals.len(), 1);
     }
 
     #[test]
-    fn review_panel_wheel_scroll_clamps_selected_long_proposal() {
+    fn shitsuji_panel_wheel_scroll_clamps_selected_long_proposal() {
         let mut app = app_for_mouse_test();
         app.state
-            .review_panel
+            .shitsuji_panel
             .replace_proposals(vec![crate::app::state::RuleProposalView {
                 proposal_id: "long-proposal".to_string(),
-                rule_text: "A long proposed rule that wraps within the review drawer. ".repeat(30),
-                target_profile_id: "review-agent".to_string(),
+                rule_text: "A long proposed rule that wraps within the shitsuji drawer. "
+                    .repeat(30),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 3,
             }]);
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 80, 12));
-        let panel = app.state.view.review_panel_rect;
-        let max_scroll = crate::ui::max_review_panel_scroll(&app.state.review_panel, panel);
+        let panel = app.state.view.shitsuji_panel_rect;
+        let max_scroll = crate::ui::max_shitsuji_panel_scroll(&app.state.shitsuji_panel, panel);
         assert!(max_scroll > 0);
 
         for _ in 0..20 {
             app.handle_mouse(mouse(MouseEventKind::ScrollDown, panel.x + 1, panel.y + 2));
         }
-        assert_eq!(app.state.review_panel.scroll, max_scroll);
-        assert_eq!(app.state.review_panel.selected, 0);
+        assert_eq!(app.state.shitsuji_panel.scroll, max_scroll);
+        assert_eq!(app.state.shitsuji_panel.selected, 0);
 
         app.handle_mouse(mouse(MouseEventKind::ScrollUp, panel.x + 1, panel.y + 2));
-        assert!(app.state.review_panel.scroll < max_scroll);
+        assert!(app.state.shitsuji_panel.scroll < max_scroll);
     }
 
     #[test]
     fn a_mobile_collapsed_handle_shares_the_header_row_with_the_switch_button() {
         let mut app = app_for_mouse_test();
         app.state
-            .review_panel
+            .shitsuji_panel
             .replace_proposals(vec![crate::app::state::RuleProposalView {
                 proposal_id: "mobile-proposal".to_string(),
                 rule_text: "Keep provider paths private.".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 2,
             }]);
-        app.state.review_panel.close_manually();
+        app.state.shitsuji_panel.close_manually();
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 44, 20));
         assert_eq!(app.state.view.layout, ViewLayout::Mobile);
 
-        let handle = app.state.view.review_panel_handle_rect;
+        let handle = app.state.view.shitsuji_panel_handle_rect;
         let header = app.state.view.mobile_header_rect;
         let menu = app.state.view.mobile_menu_hit_area;
         assert!(handle.width > 0);
@@ -2360,32 +2363,34 @@ mod tests {
             handle.x + 1,
             handle.y,
         ));
-        assert!(app.state.review_panel.is_expanded());
+        assert!(app.state.shitsuji_panel.is_expanded());
     }
 
     #[test]
-    fn mobile_review_overlay_consumes_decision_click_before_terminal() {
+    fn mobile_shitsuji_overlay_consumes_decision_click_before_terminal() {
         let mut app = app_for_mouse_test();
         app.state
-            .review_panel
+            .shitsuji_panel
             .replace_proposals(vec![crate::app::state::RuleProposalView {
                 proposal_id: "mobile-proposal".to_string(),
                 rule_text: "Keep provider paths private.".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 2,
             }]);
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 44, 20));
         assert_eq!(app.state.view.layout, ViewLayout::Mobile);
-        assert!(app.state.view.review_panel_overlay);
+        assert!(app.state.view.shitsuji_panel_overlay);
         assert_eq!(app.state.view.terminal_area.width, 44);
 
         let approve = app
             .state
             .view
-            .review_panel_hit_areas
+            .shitsuji_panel_hit_areas
             .decisions
             .iter()
-            .find(|hit| hit.request.decision == crate::review_agent::RuleProposalDecision::Approve)
+            .find(|hit| {
+                hit.request.decision == crate::shitsuji_agent::RuleProposalDecision::Approve
+            })
             .expect("mobile approve hit")
             .rect;
         app.handle_mouse(mouse(
@@ -2395,7 +2400,7 @@ mod tests {
         ));
         assert_eq!(
             app.state
-                .request_review_proposal_decision
+                .request_shitsuji_proposal_decision
                 .as_ref()
                 .map(|request| request.proposal_id.as_str()),
             Some("mobile-proposal")
@@ -2403,24 +2408,26 @@ mod tests {
     }
 
     #[test]
-    fn settings_overlay_does_not_send_clicks_to_review_decisions_behind_it() {
+    fn settings_overlay_does_not_send_clicks_to_shitsuji_decisions_behind_it() {
         let mut app = app_for_mouse_test();
         app.state
-            .review_panel
+            .shitsuji_panel
             .replace_proposals(vec![crate::app::state::RuleProposalView {
                 proposal_id: "proposal-behind-settings".to_string(),
                 rule_text: "Do not approve through an overlay.".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 1,
             }]);
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 30));
         let approve = app
             .state
             .view
-            .review_panel_hit_areas
+            .shitsuji_panel_hit_areas
             .decisions
             .iter()
-            .find(|hit| hit.request.decision == crate::review_agent::RuleProposalDecision::Approve)
+            .find(|hit| {
+                hit.request.decision == crate::shitsuji_agent::RuleProposalDecision::Approve
+            })
             .expect("approve hit area")
             .rect;
         app.state.mode = Mode::Settings;
@@ -2431,7 +2438,7 @@ mod tests {
             approve.y,
         ));
 
-        assert!(app.state.request_review_proposal_decision.is_none());
+        assert!(app.state.request_shitsuji_proposal_decision.is_none());
     }
 
     #[tokio::test]
@@ -4240,7 +4247,7 @@ mod tests {
     }
 
     #[test]
-    fn mobile_switch_button_right_edge_is_not_covered_by_collapsed_review_handle() {
+    fn mobile_switch_button_right_edge_is_not_covered_by_collapsed_shitsuji_handle() {
         let mut app = app_for_mouse_test();
         app.state.workspaces = vec![Workspace::test_new("one")];
         app.state.active = Some(0);
@@ -4249,7 +4256,7 @@ mod tests {
 
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 44, 20));
         assert_eq!(app.state.view.layout, ViewLayout::Mobile);
-        assert!(!app.state.review_panel.is_expanded());
+        assert!(!app.state.shitsuji_panel.is_expanded());
         let switch = app.state.view.mobile_menu_hit_area;
         let right_edge = switch.x + switch.width - 1;
 
@@ -4260,7 +4267,7 @@ mod tests {
         ));
 
         assert_eq!(app.state.mode, Mode::Navigate);
-        assert!(!app.state.review_panel.is_expanded());
+        assert!(!app.state.shitsuji_panel.is_expanded());
     }
 
     #[test]

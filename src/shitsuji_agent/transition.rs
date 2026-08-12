@@ -3,27 +3,27 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ActiveRule, ReviewBackendProfileId, RuleProposal, RuleProposalChange, RuleProposalDecision,
+    ActiveRule, RuleProposal, RuleProposalChange, RuleProposalDecision,
     RuleProposalDecisionRequest, RuleProposalId, RuleProposalStatus, RuleProposalSubmission,
-    RuleProposalSubmitInput, RuleProposalSubmitOutcome, MAX_RULE_OBSERVATIONS_PER_SOURCE_EVENT,
-    PROPOSAL_EVIDENCE_THRESHOLD,
+    RuleProposalSubmitInput, RuleProposalSubmitOutcome, ShitsujiBackendProfileId,
+    MAX_RULE_OBSERVATIONS_PER_SOURCE_EVENT, PROPOSAL_EVIDENCE_THRESHOLD,
 };
 
 const MAX_RULE_TEXT_BYTES: usize = 16 * 1024;
 const MAX_IDENTIFIER_BYTES: usize = 512;
 const MAX_EVIDENCE_CANDIDATES: usize = 256;
 const MAX_RULE_PROPOSALS: usize = 1024;
-type ScopedByFingerprint<T> = BTreeMap<ReviewBackendProfileId, BTreeMap<String, T>>;
+type ScopedByFingerprint<T> = BTreeMap<ShitsujiBackendProfileId, BTreeMap<String, T>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct RuleEvidence {
     rule_text: String,
-    target_profile_id: ReviewBackendProfileId,
+    target_profile_id: ShitsujiBackendProfileId,
     source_event_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ReviewAgentState {
+pub(crate) struct ShitsujiAgentState {
     proposals: BTreeMap<RuleProposalId, RuleProposal>,
     proposal_by_fingerprint: ScopedByFingerprint<RuleProposalId>,
     evidence_by_fingerprint: ScopedByFingerprint<RuleEvidence>,
@@ -31,7 +31,7 @@ pub(crate) struct ReviewAgentState {
     next_proposal_sequence: u64,
 }
 
-impl Default for ReviewAgentState {
+impl Default for ShitsujiAgentState {
     fn default() -> Self {
         Self {
             proposals: BTreeMap::new(),
@@ -109,7 +109,7 @@ impl std::fmt::Display for DecisionError {
     }
 }
 
-impl ReviewAgentState {
+impl ShitsujiAgentState {
     pub(crate) fn proposals(&self) -> impl Iterator<Item = &RuleProposal> {
         self.proposals.values()
     }
@@ -371,7 +371,7 @@ impl ReviewAgentState {
 
 fn scoped_get<'a, T>(
     values: &'a ScopedByFingerprint<T>,
-    profile_id: &ReviewBackendProfileId,
+    profile_id: &ShitsujiBackendProfileId,
     fingerprint: &str,
 ) -> Option<&'a T> {
     values
@@ -381,7 +381,7 @@ fn scoped_get<'a, T>(
 
 fn scoped_insert<T>(
     values: &mut ScopedByFingerprint<T>,
-    profile_id: ReviewBackendProfileId,
+    profile_id: ShitsujiBackendProfileId,
     fingerprint: String,
     value: T,
 ) {
@@ -393,7 +393,7 @@ fn scoped_insert<T>(
 
 fn scoped_remove<T>(
     values: &mut ScopedByFingerprint<T>,
-    profile_id: &ReviewBackendProfileId,
+    profile_id: &ShitsujiBackendProfileId,
     fingerprint: &str,
 ) {
     let should_remove_profile = values.get_mut(profile_id).is_some_and(|profile_values| {
@@ -466,13 +466,13 @@ mod tests {
     fn input(event: &str) -> RuleProposalSubmitInput {
         RuleProposalSubmitInput {
             rule_text: "Review callers affected by changed behavior.".into(),
-            target_profile_id: ReviewBackendProfileId::new("review-agent"),
-            fingerprint: "review-callers".into(),
+            target_profile_id: ShitsujiBackendProfileId::new("shitsuji-agent"),
+            fingerprint: "shitsuji-callers".into(),
             source_event_id: event.into(),
         }
     }
 
-    fn pending_proposal(state: &mut ReviewAgentState) -> RuleProposal {
+    fn pending_proposal(state: &mut ShitsujiAgentState) -> RuleProposal {
         state.submit(input("completion-1")).unwrap();
         state
             .submit(input("completion-2"))
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn duplicate_event_is_idempotent() {
-        let mut state = ReviewAgentState::default();
+        let mut state = ShitsujiAgentState::default();
         let first = state.submit(input("completion-1")).unwrap();
         let duplicate = state.submit(input("completion-1")).unwrap();
 
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn two_distinct_events_create_one_pending_proposal() {
-        let mut state = ReviewAgentState::default();
+        let mut state = ShitsujiAgentState::default();
         state.submit(input("completion-1")).unwrap();
         let second = state.submit(input("completion-2")).unwrap();
 
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn rejected_fingerprint_is_suppressed() {
-        let mut state = ReviewAgentState::default();
+        let mut state = ShitsujiAgentState::default();
         let proposal = pending_proposal(&mut state);
         state
             .decide(RuleProposalDecisionRequest {
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn approval_adds_rule_to_active_set() {
-        let mut state = ReviewAgentState::default();
+        let mut state = ShitsujiAgentState::default();
         let proposal = pending_proposal(&mut state);
         let result = state
             .decide(RuleProposalDecisionRequest {
@@ -549,12 +549,12 @@ mod tests {
         assert_eq!(result.proposal.status, RuleProposalStatus::Approved);
         let rules = state.active_rules().collect::<Vec<_>>();
         assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].fingerprint, "review-callers");
+        assert_eq!(rules[0].fingerprint, "shitsuji-callers");
     }
 
     #[test]
     fn stale_revision_conflicts() {
-        let mut state = ReviewAgentState::default();
+        let mut state = ShitsujiAgentState::default();
         let proposal = pending_proposal(&mut state);
 
         let error = state
@@ -574,7 +574,7 @@ mod tests {
 
     #[test]
     fn repeated_same_decision_is_idempotent() {
-        let mut state = ReviewAgentState::default();
+        let mut state = ShitsujiAgentState::default();
         let proposal = pending_proposal(&mut state);
         let request = RuleProposalDecisionRequest {
             proposal_id: proposal.proposal_id,
@@ -591,7 +591,7 @@ mod tests {
 
     #[test]
     fn pending_proposal_keeps_only_threshold_evidence() {
-        let mut state = ReviewAgentState::default();
+        let mut state = ShitsujiAgentState::default();
         let proposal = pending_proposal(&mut state);
         let result = state.submit(input("completion-3")).unwrap();
 
@@ -610,7 +610,7 @@ mod tests {
 
     #[test]
     fn evidence_candidate_count_is_bounded() {
-        let mut state = ReviewAgentState::default();
+        let mut state = ShitsujiAgentState::default();
         for index in 0..MAX_EVIDENCE_CANDIDATES {
             let mut candidate = input(&format!("completion-{index}"));
             candidate.fingerprint = format!("candidate-{index}");
@@ -627,7 +627,7 @@ mod tests {
 
     #[test]
     fn one_source_event_cannot_fill_the_evidence_candidate_store() {
-        let mut state = ReviewAgentState::default();
+        let mut state = ShitsujiAgentState::default();
         for index in 0..MAX_RULE_OBSERVATIONS_PER_SOURCE_EVENT {
             let mut candidate = input("same-completion");
             candidate.fingerprint = format!("candidate-{index}");
@@ -652,11 +652,11 @@ mod tests {
 
     #[test]
     fn identical_fingerprints_are_independent_between_profiles() {
-        let mut state = ReviewAgentState::default();
+        let mut state = ShitsujiAgentState::default();
         let mut profile_a_first = input("profile-a-1");
-        profile_a_first.target_profile_id = ReviewBackendProfileId::new("profile-a");
+        profile_a_first.target_profile_id = ShitsujiBackendProfileId::new("profile-a");
         let mut profile_b_first = input("profile-b-1");
-        profile_b_first.target_profile_id = ReviewBackendProfileId::new("profile-b");
+        profile_b_first.target_profile_id = ShitsujiBackendProfileId::new("profile-b");
 
         state.submit(profile_a_first.clone()).unwrap();
         state.submit(profile_b_first.clone()).unwrap();
@@ -694,7 +694,7 @@ mod tests {
 
     #[test]
     fn proposal_count_is_bounded() {
-        let mut state = ReviewAgentState::default();
+        let mut state = ShitsujiAgentState::default();
         for index in 0..MAX_RULE_PROPOSALS {
             let mut first = input(&format!("completion-{index}-1"));
             first.fingerprint = format!("proposal-{index}");
@@ -718,7 +718,7 @@ mod tests {
 
     #[test]
     fn validation_rejects_terminal_control_characters() {
-        let mut state = ReviewAgentState::default();
+        let mut state = ShitsujiAgentState::default();
         let mut escaped_rule = input("completion-1");
         escaped_rule.rule_text = "safe\u{1b}[31mred".into();
         assert_eq!(
@@ -727,7 +727,7 @@ mod tests {
         );
 
         let mut escaped_profile = input("completion-1");
-        escaped_profile.target_profile_id = ReviewBackendProfileId::new("review\nagent");
+        escaped_profile.target_profile_id = ShitsujiBackendProfileId::new("shitsuji\nagent");
         assert_eq!(
             state.submit(escaped_profile).unwrap_err(),
             SubmitError::InvalidControlCharacter("target_profile_id")

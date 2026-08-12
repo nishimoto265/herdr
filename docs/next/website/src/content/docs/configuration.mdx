@@ -94,22 +94,22 @@ new_cwd = "follow"
 
 `new_cwd = "follow"` keeps the default behavior and inherits the source pane or workspace. When there is no source workspace, Herdr starts in `$HOME`. Use `"home"` to always start in `$HOME`, `"current"` to use Herdr's process directory, or a fixed path such as `"~/Projects"`. Explicit `--cwd` values from the CLI or socket API still take precedence.
 
-## Review Agent
+## Shitsuji Agent
 
-The Review Agent is opt-in. It watches completed Claude and Codex turns, asks a dedicated backend agent to review them, and presents proposed rules in Herdr's right-side review panel.
+The **shitsuji** (Japanese for butler) agent is opt-in. It watches completed Claude and Codex turns, asks a dedicated backend agent to review them, and presents proposed rules in Herdr's right-side rule proposal panel.
 
 ```toml
-[review_agent]
+[shitsuji_agent]
 enabled = true
-backend_profile_id = "review-agent"
+backend_profile_id = "shitsuji-agent"
 backend_argv = ["codex"]
 readiness_attempts = 20
 readiness_interval_ms = 250
 ```
 
 - `enabled` enables the feature. It defaults to `false`.
-- `backend_profile_id` identifies the backend profile associated with the review session. It must not be empty.
-- `backend_argv` is the executable and arguments used to replace the pane's resident backside with the review backend. Each array item is passed directly as an argument; Herdr does not parse this value through a shell.
+- `backend_profile_id` identifies the backend profile associated with the shitsuji session. It must not be empty.
+- `backend_argv` is the executable and arguments used to replace the pane's resident backside with the shitsuji backend. Each array item is passed directly as an argument; Herdr does not parse this value through a shell.
 - `readiness_attempts` sets the maximum number of transcript-readiness checks. Values from `2` through `100` are accepted.
 - `readiness_interval_ms` sets the delay between readiness checks. Values from `1` through `5000` milliseconds are accepted.
 
@@ -120,7 +120,7 @@ Claude transcripts are resolved below `$CLAUDE_CONFIG_DIR/projects`, or `~/.clau
 Before notifying the backend, Herdr waits for the provider-specific completion boundary and two stable observations of the JSONL file, up to the configured attempt limit. It then passes the canonical absolute JSONL path and the completed byte range to the backend. The path must remain a regular, non-symlinked file inside the provider's data root.
 
 :::caution
-`backend_argv` is a trusted local executable that runs with your user account's permissions. It can reach the same local sockets and session files as other processes owned by your account, so the review panel is a workflow boundary, not a security sandbox against a malicious backend. Configure only an executable and profile you trust. Conversation transcripts remain untrusted input and may contain prompt-injection attempts; the backend must treat transcript content as data, never as instructions to execute.
+`backend_argv` is a trusted local executable that runs with your user account's permissions. It can reach the same local sockets and session files as other processes owned by your account, so the rule proposal panel is a workflow boundary, not a security sandbox against a malicious backend. Configure only an executable and profile you trust. Conversation transcripts remain untrusted input and may contain prompt-injection attempts; the backend must treat transcript content as data, never as instructions to execute.
 :::
 
 ## Worktrees

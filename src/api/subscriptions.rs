@@ -200,9 +200,9 @@ impl ActiveSubscription {
                 event_kind: crate::api::schema::EventKind::LayoutUpdated,
                 last_sequence: 0,
             })),
-            Subscription::ReviewRuleProposalChanged {} => {
+            Subscription::ShitsujiRuleProposalChanged {} => {
                 Ok(Self::Event(ActiveEventSubscription {
-                    event_kind: crate::api::schema::EventKind::ReviewRuleProposalChanged,
+                    event_kind: crate::api::schema::EventKind::ShitsujiRuleProposalChanged,
                     last_sequence: 0,
                 }))
             }

@@ -298,7 +298,7 @@ pub struct Config {
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
-    pub review_agent: ReviewAgentConfig,
+    pub shitsuji_agent: ShitsujiAgentConfig,
 }
 
 #[derive(Debug)]
@@ -871,8 +871,8 @@ pub struct RemoteConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
-pub struct ReviewAgentConfig {
-    /// Review processing is opt-in and stays inert without a backend argv.
+pub struct ShitsujiAgentConfig {
+    /// Shitsuji processing is opt-in and stays inert without a backend argv.
     pub enabled: bool,
     /// Stable product profile identifier included in the backend role prompt.
     pub backend_profile_id: String,
@@ -884,17 +884,17 @@ pub struct ReviewAgentConfig {
     pub readiness_interval_ms: u64,
 }
 
-const MAX_REVIEW_READINESS_ATTEMPTS: u16 = 100;
-const MAX_REVIEW_READINESS_INTERVAL_MS: u64 = 5_000;
+const MAX_SHITSUJI_READINESS_ATTEMPTS: u16 = 100;
+const MAX_SHITSUJI_READINESS_INTERVAL_MS: u64 = 5_000;
 
-impl ReviewAgentConfig {
+impl ShitsujiAgentConfig {
     pub(crate) fn runtime_enabled(&self) -> bool {
         self.enabled
             && !self.backend_profile_id.trim().is_empty()
             && !self.backend_argv.is_empty()
             && self.backend_argv.iter().all(|part| !part.is_empty())
-            && (2..=MAX_REVIEW_READINESS_ATTEMPTS).contains(&self.readiness_attempts)
-            && (1..=MAX_REVIEW_READINESS_INTERVAL_MS).contains(&self.readiness_interval_ms)
+            && (2..=MAX_SHITSUJI_READINESS_ATTEMPTS).contains(&self.readiness_attempts)
+            && (1..=MAX_SHITSUJI_READINESS_INTERVAL_MS).contains(&self.readiness_interval_ms)
     }
 
     pub(crate) fn diagnostic(&self) -> Option<String> {
@@ -902,28 +902,29 @@ impl ReviewAgentConfig {
             return None;
         }
         if self.backend_profile_id.trim().is_empty() {
-            return Some("review_agent.backend_profile_id must not be empty when enabled".into());
+            return Some("shitsuji_agent.backend_profile_id must not be empty when enabled".into());
         }
         if self.backend_argv.is_empty() || self.backend_argv.iter().any(String::is_empty) {
             return Some(
-                "review_agent.backend_argv must contain non-empty argv entries when enabled".into(),
+                "shitsuji_agent.backend_argv must contain non-empty argv entries when enabled"
+                    .into(),
             );
         }
-        if !(2..=MAX_REVIEW_READINESS_ATTEMPTS).contains(&self.readiness_attempts) {
+        if !(2..=MAX_SHITSUJI_READINESS_ATTEMPTS).contains(&self.readiness_attempts) {
             return Some(format!(
-                "review_agent.readiness_attempts must be between 2 and {MAX_REVIEW_READINESS_ATTEMPTS}"
+                "shitsuji_agent.readiness_attempts must be between 2 and {MAX_SHITSUJI_READINESS_ATTEMPTS}"
             ));
         }
-        if !(1..=MAX_REVIEW_READINESS_INTERVAL_MS).contains(&self.readiness_interval_ms) {
+        if !(1..=MAX_SHITSUJI_READINESS_INTERVAL_MS).contains(&self.readiness_interval_ms) {
             return Some(format!(
-                "review_agent.readiness_interval_ms must be between 1 and {MAX_REVIEW_READINESS_INTERVAL_MS}"
+                "shitsuji_agent.readiness_interval_ms must be between 1 and {MAX_SHITSUJI_READINESS_INTERVAL_MS}"
             ));
         }
         None
     }
 }
 
-impl Default for ReviewAgentConfig {
+impl Default for ShitsujiAgentConfig {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -1779,24 +1780,24 @@ scrollback_lines = 12345
     }
 
     #[test]
-    fn review_agent_is_disabled_by_default_and_requires_direct_argv() {
+    fn shitsuji_agent_is_disabled_by_default_and_requires_direct_argv() {
         let default = Config::default();
-        assert!(!default.review_agent.runtime_enabled());
-        assert_eq!(default.review_agent.readiness_attempts, 20);
+        assert!(!default.shitsuji_agent.runtime_enabled());
+        assert_eq!(default.shitsuji_agent.readiness_attempts, 20);
 
         let config: Config = toml::from_str(
             r#"
-[review_agent]
+[shitsuji_agent]
 enabled = true
-backend_profile_id = "review-agent"
-backend_argv = ["codex", "--profile", "review"]
+backend_profile_id = "shitsuji-agent"
+backend_argv = ["codex", "--profile", "shitsuji"]
 readiness_attempts = 8
 readiness_interval_ms = 125
 "#,
         )
-        .expect("review config");
-        assert!(config.review_agent.runtime_enabled());
-        assert_eq!(config.review_agent.backend_argv[0], "codex");
-        assert_eq!(config.review_agent.readiness_attempts, 8);
+        .expect("shitsuji config");
+        assert!(config.shitsuji_agent.runtime_enabled());
+        assert_eq!(config.shitsuji_agent.backend_argv[0], "codex");
+        assert_eq!(config.shitsuji_agent.readiness_attempts, 8);
     }
 }

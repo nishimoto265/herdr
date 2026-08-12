@@ -217,7 +217,7 @@ pub(crate) fn compute_tab_bar_view(
 /// Width of the strip at the right of `area` that another widget already claimed, matching the
 /// reservation `compute_tab_bar_view` was given for the same row.
 fn trailing_width_owned_by_others(app: &AppState, area: Rect) -> u16 {
-    let claimed = app.view.review_panel_handle_rect;
+    let claimed = app.view.shitsuji_panel_handle_rect;
     if claimed.width == 0 || claimed.y != area.y {
         return 0;
     }

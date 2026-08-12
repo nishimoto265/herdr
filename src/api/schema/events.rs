@@ -76,8 +76,8 @@ pub enum Subscription {
     PaneScrollChanged { pane_id: String },
     #[serde(rename = "layout.updated")]
     LayoutUpdated {},
-    #[serde(rename = "review.rule_proposal.changed")]
-    ReviewRuleProposalChanged {},
+    #[serde(rename = "shitsuji.rule_proposal.changed")]
+    ShitsujiRuleProposalChanged {},
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -211,7 +211,7 @@ pub enum EventKind {
     PaneAgentDetected,
     PaneAgentStatusChanged,
     LayoutUpdated,
-    ReviewRuleProposalChanged,
+    ShitsujiRuleProposalChanged,
 }
 
 impl EventKind {
@@ -240,7 +240,7 @@ impl EventKind {
             EventKind::PaneAgentDetected => "pane.agent_detected",
             EventKind::PaneAgentStatusChanged => "pane.agent_status_changed",
             EventKind::LayoutUpdated => "layout.updated",
-            EventKind::ReviewRuleProposalChanged => "review.rule_proposal.changed",
+            EventKind::ShitsujiRuleProposalChanged => "shitsuji.rule_proposal.changed",
         }
     }
 }
@@ -270,7 +270,7 @@ pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
     EventKind::PaneAgentDetected,
     EventKind::PaneAgentStatusChanged,
     EventKind::LayoutUpdated,
-    EventKind::ReviewRuleProposalChanged,
+    EventKind::ShitsujiRuleProposalChanged,
 ];
 
 pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
@@ -528,8 +528,8 @@ pub enum EventData {
     LayoutUpdated {
         layout: super::panes::PaneLayoutSnapshot,
     },
-    ReviewRuleProposalChanged {
-        proposal: super::review_agent::RuleProposal,
-        change: super::review_agent::RuleProposalChange,
+    ShitsujiRuleProposalChanged {
+        proposal: super::shitsuji_agent::RuleProposal,
+        change: super::shitsuji_agent::RuleProposalChange,
     },
 }

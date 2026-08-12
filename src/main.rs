@@ -85,10 +85,10 @@ mod raw_input;
 mod release_notes;
 mod remote;
 mod render_prof;
-mod review_agent;
 mod selection;
 mod server;
 mod session;
+mod shitsuji_agent;
 mod sound;
 mod terminal;
 mod terminal_modes;
@@ -516,7 +516,7 @@ fn main() -> io::Result<()> {
         println!("       herdr worktree <subcommand> ...");
         println!("       herdr tab <subcommand> ...");
         println!("       herdr notification <subcommand> ...");
-        println!("       herdr review <subcommand> ...");
+        println!("       herdr shitsuji <subcommand> ...");
         println!("       herdr agent <subcommand> ...");
         println!("       herdr pane <subcommand> ...");
         println!("       herdr wait <subcommand> ...");
@@ -570,8 +570,8 @@ fn main() -> io::Result<()> {
                 "Notification helpers over the socket API",
             ),
             (
-                "herdr review <subcommand>",
-                "Submit and inspect Review Agent rule proposals",
+                "herdr shitsuji <subcommand>",
+                "Submit and inspect Shitsuji Agent rule proposals",
             ),
             (
                 "herdr agent <subcommand>",

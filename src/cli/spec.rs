@@ -34,7 +34,7 @@ pub(super) fn command() -> Command {
         .subcommand(worktree_command())
         .subcommand(tab_command())
         .subcommand(notification_command())
-        .subcommand(review_command())
+        .subcommand(shitsuji_command())
         .subcommand(agent_command())
         .subcommand(pane_command())
         .subcommand(wait_command())
@@ -255,9 +255,9 @@ fn notification_command() -> Command {
         )
 }
 
-fn review_command() -> Command {
-    Command::new("review")
-        .about("Submit and inspect Review Agent rule proposals")
+fn shitsuji_command() -> Command {
+    Command::new("shitsuji")
+        .about("Submit and inspect Shitsuji Agent rule proposals")
         .subcommand(
             Command::new("submit")
                 .about("Record one rule observation")

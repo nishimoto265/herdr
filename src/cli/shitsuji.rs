@@ -1,9 +1,9 @@
 use crate::api::schema::{
-    Method, Request, ReviewBackendProfileId, RuleProposalListParams, RuleProposalStatus,
-    RuleProposalSubmitParams,
+    Method, Request, RuleProposalListParams, RuleProposalStatus, RuleProposalSubmitParams,
+    ShitsujiBackendProfileId,
 };
 
-pub(super) fn run_review_command(args: &[String]) -> std::io::Result<i32> {
+pub(super) fn run_shitsuji_command(args: &[String]) -> std::io::Result<i32> {
     match args.first().map(String::as_str) {
         Some("submit") => submit(&args[1..]),
         Some("list") => list(&args[1..]),
@@ -35,7 +35,7 @@ fn submit(args: &[String]) -> std::io::Result<i32> {
                 return Ok(0);
             }
             other => {
-                eprintln!("unknown review submit option: {other}");
+                eprintln!("unknown shitsuji submit option: {other}");
                 print_submit_help();
                 return Ok(2);
             }
@@ -66,10 +66,10 @@ fn submit(args: &[String]) -> std::io::Result<i32> {
     };
 
     super::print_response(&super::send_request(&Request {
-        id: "cli:review:submit".into(),
-        method: Method::ReviewRuleProposalSubmit(RuleProposalSubmitParams {
+        id: "cli:shitsuji:submit".into(),
+        method: Method::ShitsujiRuleProposalSubmit(RuleProposalSubmitParams {
             rule_text,
-            target_profile_id: ReviewBackendProfileId::new(target_profile_id),
+            target_profile_id: ShitsujiBackendProfileId::new(target_profile_id),
             fingerprint,
             source_event_id,
         }),
@@ -96,8 +96,8 @@ fn list(args: &[String]) -> std::io::Result<i32> {
         }
     };
     super::print_response(&super::send_request(&Request {
-        id: "cli:review:list".into(),
-        method: Method::ReviewRuleProposalList(RuleProposalListParams { status }),
+        id: "cli:shitsuji:list".into(),
+        method: Method::ShitsujiRuleProposalList(RuleProposalListParams { status }),
     })?)
 }
 
@@ -111,19 +111,19 @@ fn parse_status(value: &str) -> Option<RuleProposalStatus> {
 }
 
 fn print_help() {
-    eprintln!("herdr review commands:");
-    eprintln!("  herdr review submit --rule TEXT --target ID --fingerprint ID --source-event ID");
-    eprintln!("  herdr review list [--status pending|approved|rejected]");
+    eprintln!("herdr shitsuji commands:");
+    eprintln!("  herdr shitsuji submit --rule TEXT --target ID --fingerprint ID --source-event ID");
+    eprintln!("  herdr shitsuji list [--status pending|approved|rejected]");
 }
 
 fn print_submit_help() {
     eprintln!(
-        "usage: herdr review submit --rule TEXT --target ID --fingerprint ID --source-event ID"
+        "usage: herdr shitsuji submit --rule TEXT --target ID --fingerprint ID --source-event ID"
     );
 }
 
 fn print_list_help() {
-    eprintln!("usage: herdr review list [--status pending|approved|rejected]");
+    eprintln!("usage: herdr shitsuji list [--status pending|approved|rejected]");
 }
 
 #[cfg(test)]

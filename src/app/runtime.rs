@@ -199,10 +199,10 @@ impl App {
         let mut changed = false;
         let mut resized = false;
 
-        self.submit_due_review_prompts(now);
-        self.retry_pending_review_actions();
-        self.retry_failed_review_backends(now);
-        self.reconcile_review_backend_readiness(now);
+        self.submit_due_shitsuji_prompts(now);
+        self.retry_pending_shitsuji_actions();
+        self.retry_failed_shitsuji_backends(now);
+        self.reconcile_shitsuji_backend_readiness(now);
 
         self.sync_animation_timer(now);
 
@@ -571,7 +571,7 @@ impl App {
             self.session_save_deadline,
             self.selection_autoscroll_deadline,
             self.selection_highlight_clear_deadline,
-            self.next_review_prompt_submit_deadline(),
+            self.next_shitsuji_prompt_submit_deadline(),
             render_deadline,
         ]
         .into_iter()
