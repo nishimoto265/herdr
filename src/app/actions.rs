@@ -1592,8 +1592,8 @@ impl AppState {
             self.tab_scroll,
             self.tab_scroll_follow_active,
             self.mouse_capture,
-            crate::ui::review_panel_handle_slot(
-                &self.review_panel,
+            crate::ui::shitsuji_panel_handle_slot(
+                &self.shitsuji_panel,
                 area,
                 crate::ui::MIN_TAB_BAR_CONTENT_WIDTH,
                 self.view.terminal_area,
@@ -2772,9 +2772,8 @@ impl AppState {
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
             AppEvent::PluginCommandFinished { .. } => Vec::new(),
-            AppEvent::ReviewTranscriptResolved { .. } | AppEvent::ReviewCompletionProbed { .. } => {
-                Vec::new()
-            }
+            AppEvent::ShitsujiTranscriptResolved { .. }
+            | AppEvent::ShitsujiCompletionProbed { .. } => Vec::new(),
         }
     }
 
@@ -2806,7 +2805,7 @@ impl AppState {
             }
         }
         // Backside transitions are internal runtime facts. Return them through
-        // the same PaneStateUpdate path as front panes so Review Agent delivery
+        // the same PaneStateUpdate path as front panes so Shitsuji Agent delivery
         // observes each effective transition exactly once, but do not project
         // them into front-pane seen/toast/notification state.
         let seen = if self.workspaces[ws_idx]

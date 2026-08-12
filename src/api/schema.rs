@@ -7,9 +7,9 @@ pub mod integrations;
 pub mod panes;
 pub mod plugins;
 pub mod response;
-pub mod review_agent;
 pub mod server;
 pub mod session;
+pub mod shitsuji_agent;
 pub mod tabs;
 pub mod workspaces;
 pub mod worktrees;
@@ -21,9 +21,9 @@ pub use integrations::*;
 pub use panes::*;
 pub use plugins::*;
 pub use response::*;
-pub use review_agent::*;
 pub use server::*;
 pub use session::*;
+pub use shitsuji_agent::*;
 pub use tabs::*;
 pub use workspaces::*;
 pub use worktrees::*;
@@ -205,10 +205,10 @@ pub enum Method {
     PluginPaneFocus(PluginPaneFocusParams),
     #[serde(rename = "plugin.pane.close")]
     PluginPaneClose(PluginPaneCloseParams),
-    #[serde(rename = "review.rule_proposal.submit")]
-    ReviewRuleProposalSubmit(RuleProposalSubmitParams),
-    #[serde(rename = "review.rule_proposal.list")]
-    ReviewRuleProposalList(RuleProposalListParams),
+    #[serde(rename = "shitsuji.rule_proposal.submit")]
+    ShitsujiRuleProposalSubmit(RuleProposalSubmitParams),
+    #[serde(rename = "shitsuji.rule_proposal.list")]
+    ShitsujiRuleProposalList(RuleProposalListParams),
 }
 
 #[cfg(test)]

@@ -75,7 +75,7 @@ fn pane_chrome_color(palette: &Palette, is_focused: bool, backside_visible: bool
 
 fn pane_backside_toggle_area(
     info: &PaneInfo,
-    review_handle: Rect,
+    shitsuji_handle: Rect,
     backside_visible: bool,
 ) -> Option<crate::app::state::PaneBacksideToggleArea> {
     if info.rect.width == 0 || info.rect.height == 0 {
@@ -91,13 +91,13 @@ fn pane_backside_toggle_area(
     let y = info.rect.y;
     // The handle normally lives on the chrome row, but its no-chrome-row fallback puts it on the
     // terminal's top row, which is also the top pane's control row.
-    if review_handle.width > 0
-        && y >= review_handle.y
-        && y < review_handle.y.saturating_add(review_handle.height)
-        && review_handle.x < right
-        && review_handle.x.saturating_add(review_handle.width) > info.rect.x
+    if shitsuji_handle.width > 0
+        && y >= shitsuji_handle.y
+        && y < shitsuji_handle.y.saturating_add(shitsuji_handle.height)
+        && shitsuji_handle.x < right
+        && shitsuji_handle.x.saturating_add(shitsuji_handle.width) > info.rect.x
     {
-        right = right.min(review_handle.x);
+        right = right.min(shitsuji_handle.x);
     }
 
     let left = if info.borders.contains(Borders::LEFT) {
@@ -134,7 +134,7 @@ fn pane_backside_toggle_area(
 pub(super) fn compute_pane_backside_toggle_areas(
     app: &AppState,
     pane_infos: &[PaneInfo],
-    review_handle: Rect,
+    shitsuji_handle: Rect,
 ) -> Vec<crate::app::state::PaneBacksideToggleArea> {
     let Some(tab) = app
         .active
@@ -146,7 +146,7 @@ pub(super) fn compute_pane_backside_toggle_areas(
     pane_infos
         .iter()
         .filter_map(|info| {
-            pane_backside_toggle_area(info, review_handle, pane_backside_visible(tab, info.id))
+            pane_backside_toggle_area(info, shitsuji_handle, pane_backside_visible(tab, info.id))
         })
         .collect()
 }
@@ -1613,7 +1613,7 @@ mod tests {
     }
 
     #[test]
-    fn single_pane_backside_toggle_keeps_the_pane_edge_the_review_handle_no_longer_takes() {
+    fn single_pane_backside_toggle_keeps_the_pane_edge_the_shitsuji_handle_no_longer_takes() {
         let mut app = AppState::test_new();
         app.mode = Mode::Terminal;
         let mut ws = Workspace::test_new("test");
@@ -1631,7 +1631,7 @@ mod tests {
             crate::kitty_graphics::HostCellSize::default(),
         );
         let pane = app.view.pane_infos.first().unwrap();
-        let handle = app.view.review_panel_handle_rect;
+        let handle = app.view.shitsuji_panel_handle_rect;
         assert!(pane.borders.is_empty());
         assert!(handle.width > 0);
         let toggle = &app.view.pane_backside_toggle_areas[0];

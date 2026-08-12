@@ -662,7 +662,7 @@
                   "$ref": "#/schemas/event/$defs/RuleProposal"
                 },
                 "type": {
-                  "const": "review_rule_proposal_changed",
+                  "const": "shitsuji_rule_proposal_changed",
                   "type": "string"
                 }
               },
@@ -700,7 +700,7 @@
             "pane_agent_detected",
             "pane_agent_status_changed",
             "layout_updated",
-            "review_rule_proposal_changed"
+            "shitsuji_rule_proposal_changed"
           ],
           "type": "string"
         },
@@ -3543,7 +3543,7 @@
             {
               "properties": {
                 "type": {
-                  "const": "review.rule_proposal.changed",
+                  "const": "shitsuji.rule_proposal.changed",
                   "type": "string"
                 }
               },
@@ -5149,7 +5149,7 @@
         {
           "properties": {
             "method": {
-              "const": "review.rule_proposal.submit",
+              "const": "shitsuji.rule_proposal.submit",
               "type": "string"
             },
             "params": {
@@ -5165,7 +5165,7 @@
         {
           "properties": {
             "method": {
-              "const": "review.rule_proposal.list",
+              "const": "shitsuji.rule_proposal.list",
               "type": "string"
             },
             "params": {
@@ -6232,7 +6232,7 @@
                   "$ref": "#/schemas/success_response/$defs/RuleProposal"
                 },
                 "type": {
-                  "const": "review_rule_proposal_changed",
+                  "const": "shitsuji_rule_proposal_changed",
                   "type": "string"
                 }
               },
@@ -6285,7 +6285,7 @@
             "pane_agent_detected",
             "pane_agent_status_changed",
             "layout_updated",
-            "review_rule_proposal_changed"
+            "shitsuji_rule_proposal_changed"
           ],
           "type": "string"
         },

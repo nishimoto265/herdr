@@ -15,9 +15,9 @@ use super::plugins::{
     InstalledPluginInfo, PluginActionInfo, PluginCommandLogInfo, PluginInvocationContext,
     PluginPaneInfo,
 };
-use super::review_agent::{ActiveRule, RuleProposal, RuleProposalSubmission};
 use super::server::ServerCapabilities;
 use super::session::SessionSnapshot;
+use super::shitsuji_agent::{ActiveRule, RuleProposal, RuleProposalSubmission};
 use super::tabs::TabInfo;
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{WorktreeInfo, WorktreeSourceInfo};

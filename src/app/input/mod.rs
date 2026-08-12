@@ -58,7 +58,7 @@ use self::{
     modal::{
         modal_action_from_key, ModalAction, ONBOARDING_WELCOME_ACTIONS, RELEASE_NOTES_ACTIONS,
     },
-    mouse::{MouseAction, ReviewPanelMouseAction},
+    mouse::{MouseAction, ShitsujiPanelMouseAction},
     settings::SettingsAction,
 };
 use super::state::{AppState, Mode};
@@ -77,7 +77,7 @@ impl App {
             }
             return;
         }
-        if self.state.mode == Mode::Terminal && self.handle_review_panel_key(key_event) {
+        if self.state.mode == Mode::Terminal && self.handle_shitsuji_panel_key(key_event) {
             return;
         }
 
@@ -247,11 +247,11 @@ impl App {
         }
 
         if self.state.mode == Mode::Terminal {
-            match self.state.handle_review_panel_mouse(mouse) {
-                ReviewPanelMouseAction::Ignored => {}
-                ReviewPanelMouseAction::Consumed => return,
-                ReviewPanelMouseAction::Decision(request) => {
-                    self.state.request_review_proposal_decision = Some(request);
+            match self.state.handle_shitsuji_panel_mouse(mouse) {
+                ShitsujiPanelMouseAction::Ignored => {}
+                ShitsujiPanelMouseAction::Consumed => return,
+                ShitsujiPanelMouseAction::Decision(request) => {
+                    self.state.request_shitsuji_proposal_decision = Some(request);
                     return;
                 }
             }
@@ -391,54 +391,56 @@ impl App {
         }
     }
 
-    fn handle_review_panel_key(&mut self, key: KeyEvent) -> bool {
-        if !self.state.review_panel.keyboard_focused {
+    fn handle_shitsuji_panel_key(&mut self, key: KeyEvent) -> bool {
+        if !self.state.shitsuji_panel.keyboard_focused {
             return false;
         }
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.state.review_panel.close_manually(),
+            KeyCode::Esc | KeyCode::Char('q') => self.state.shitsuji_panel.close_manually(),
             KeyCode::Up | KeyCode::Char('k') => {
-                self.state.review_panel.selected =
-                    self.state.review_panel.selected.saturating_sub(1);
-                self.state.review_panel.scroll = 0;
+                self.state.shitsuji_panel.selected =
+                    self.state.shitsuji_panel.selected.saturating_sub(1);
+                self.state.shitsuji_panel.scroll = 0;
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.state.review_panel.selected = self
+                self.state.shitsuji_panel.selected = self
                     .state
-                    .review_panel
+                    .shitsuji_panel
                     .selected
                     .saturating_add(1)
-                    .min(self.state.review_panel.proposals.len().saturating_sub(1));
-                self.state.review_panel.scroll = 0;
+                    .min(self.state.shitsuji_panel.proposals.len().saturating_sub(1));
+                self.state.shitsuji_panel.scroll = 0;
             }
             KeyCode::PageUp => {
-                self.state.review_panel.scroll = self.state.review_panel.scroll.saturating_sub(
-                    crate::ui::review_panel_page_height(self.state.view.review_panel_rect),
+                self.state.shitsuji_panel.scroll = self.state.shitsuji_panel.scroll.saturating_sub(
+                    crate::ui::shitsuji_panel_page_height(self.state.view.shitsuji_panel_rect),
                 );
             }
             KeyCode::PageDown => {
-                self.state.review_panel.scroll = self
+                self.state.shitsuji_panel.scroll = self
                     .state
-                    .review_panel
+                    .shitsuji_panel
                     .scroll
-                    .saturating_add(crate::ui::review_panel_page_height(
-                        self.state.view.review_panel_rect,
+                    .saturating_add(crate::ui::shitsuji_panel_page_height(
+                        self.state.view.shitsuji_panel_rect,
                     ))
-                    .min(crate::ui::max_review_panel_scroll(
-                        &self.state.review_panel,
-                        self.state.view.review_panel_rect,
+                    .min(crate::ui::max_shitsuji_panel_scroll(
+                        &self.state.shitsuji_panel,
+                        self.state.view.shitsuji_panel_rect,
                     ));
             }
             KeyCode::Char(key @ ('a' | 'r'))
-                if self.state.request_review_proposal_decision.is_none() =>
+                if self.state.request_shitsuji_proposal_decision.is_none() =>
             {
                 let decision = if key == 'a' {
-                    crate::review_agent::RuleProposalDecision::Approve
+                    crate::shitsuji_agent::RuleProposalDecision::Approve
                 } else {
-                    crate::review_agent::RuleProposalDecision::Reject
+                    crate::shitsuji_agent::RuleProposalDecision::Reject
                 };
-                self.state.request_review_proposal_decision =
-                    self.state.review_panel.selected_decision_request(decision);
+                self.state.request_shitsuji_proposal_decision = self
+                    .state
+                    .shitsuji_panel
+                    .selected_decision_request(decision);
             }
             _ => {}
         }
@@ -801,9 +803,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn focused_review_panel_does_not_steal_keys_from_higher_modal() {
+    async fn focused_shitsuji_panel_does_not_steal_keys_from_higher_modal() {
         let mut app = test_app();
-        app.state.review_panel.open_manually();
+        app.state.shitsuji_panel.open_manually();
         app.state.mode = Mode::Settings;
 
         app.handle_key(TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()))
@@ -811,76 +813,78 @@ mod tests {
 
         assert_ne!(app.state.mode, Mode::Settings);
         assert_eq!(
-            app.state.review_panel.visibility,
-            crate::app::state::ReviewPanelVisibility::ManuallyOpen
+            app.state.shitsuji_panel.visibility,
+            crate::app::state::ShitsujiPanelVisibility::ManuallyOpen
         );
     }
 
     #[test]
-    fn focused_review_panel_navigation_keeps_decision_on_selected_proposal() {
+    fn focused_shitsuji_panel_navigation_keeps_decision_on_selected_proposal() {
         let mut app = test_app();
-        app.state.review_panel.replace_proposals(vec![
+        app.state.shitsuji_panel.replace_proposals(vec![
             crate::app::state::RuleProposalView {
                 proposal_id: "first".to_string(),
                 rule_text: "First rule".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 2,
             },
             crate::app::state::RuleProposalView {
                 proposal_id: "second".to_string(),
                 rule_text: "Second rule".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 5,
             },
         ]);
-        app.state.review_panel.open_manually();
-        app.state.review_panel.scroll = 3;
-        app.state.view.review_panel_rect = ratatui::layout::Rect::new(0, 0, 40, 20);
+        app.state.shitsuji_panel.open_manually();
+        app.state.shitsuji_panel.scroll = 3;
+        app.state.view.shitsuji_panel_rect = ratatui::layout::Rect::new(0, 0, 40, 20);
 
         assert!(
-            app.handle_review_panel_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()))
+            app.handle_shitsuji_panel_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()))
         );
-        assert_eq!(app.state.review_panel.selected, 1);
-        assert_eq!(app.state.review_panel.scroll, 0);
+        assert_eq!(app.state.shitsuji_panel.selected, 1);
+        assert_eq!(app.state.shitsuji_panel.scroll, 0);
 
         assert!(
-            app.handle_review_panel_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::empty()))
+            app.handle_shitsuji_panel_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::empty()))
         );
         let request = app
             .state
-            .request_review_proposal_decision
+            .request_shitsuji_proposal_decision
             .as_ref()
             .expect("immediate reject request");
         assert_eq!(request.proposal_id.as_str(), "second");
         assert_eq!(request.expected_revision, 5);
         assert_eq!(
             request.decision,
-            crate::review_agent::RuleProposalDecision::Reject
+            crate::shitsuji_agent::RuleProposalDecision::Reject
         );
     }
 
     #[test]
-    fn focused_review_panel_keyboard_decisions_are_immediate() {
+    fn focused_shitsuji_panel_keyboard_decisions_are_immediate() {
         for (key, expected) in [
-            ('r', crate::review_agent::RuleProposalDecision::Reject),
-            ('a', crate::review_agent::RuleProposalDecision::Approve),
+            ('r', crate::shitsuji_agent::RuleProposalDecision::Reject),
+            ('a', crate::shitsuji_agent::RuleProposalDecision::Approve),
         ] {
             let mut app = test_app();
             app.state
-                .review_panel
+                .shitsuji_panel
                 .replace_proposals(vec![crate::app::state::RuleProposalView {
                     proposal_id: "selected".to_string(),
                     rule_text: "Selected rule".to_string(),
-                    target_profile_id: "review-agent".to_string(),
+                    target_profile_id: "shitsuji-agent".to_string(),
                     revision: 8,
                 }]);
-            app.state.review_panel.open_manually();
+            app.state.shitsuji_panel.open_manually();
 
-            assert!(app
-                .handle_review_panel_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::empty())));
+            assert!(app.handle_shitsuji_panel_key(KeyEvent::new(
+                KeyCode::Char(key),
+                KeyModifiers::empty()
+            )));
             let request = app
                 .state
-                .request_review_proposal_decision
+                .request_shitsuji_proposal_decision
                 .as_ref()
                 .expect("immediate decision request");
             assert_eq!(request.proposal_id.as_str(), "selected");
@@ -890,82 +894,84 @@ mod tests {
     }
 
     #[test]
-    fn focused_review_panel_navigation_clamps_at_proposal_boundaries() {
+    fn focused_shitsuji_panel_navigation_clamps_at_proposal_boundaries() {
         let mut app = test_app();
-        app.state.review_panel.replace_proposals(vec![
+        app.state.shitsuji_panel.replace_proposals(vec![
             crate::app::state::RuleProposalView {
                 proposal_id: "first".to_string(),
                 rule_text: "First rule".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 1,
             },
             crate::app::state::RuleProposalView {
                 proposal_id: "second".to_string(),
                 rule_text: "Second rule".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 1,
             },
         ]);
-        app.state.review_panel.open_manually();
+        app.state.shitsuji_panel.open_manually();
 
         for code in [KeyCode::Up, KeyCode::Char('k')] {
-            assert!(app.handle_review_panel_key(KeyEvent::new(code, KeyModifiers::empty())));
-            assert_eq!(app.state.review_panel.selected, 0);
+            assert!(app.handle_shitsuji_panel_key(KeyEvent::new(code, KeyModifiers::empty())));
+            assert_eq!(app.state.shitsuji_panel.selected, 0);
         }
-        assert!(app.handle_review_panel_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty())));
-        assert_eq!(app.state.review_panel.selected, 1);
+        assert!(app.handle_shitsuji_panel_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty())));
+        assert_eq!(app.state.shitsuji_panel.selected, 1);
         for code in [KeyCode::Down, KeyCode::Char('j')] {
-            assert!(app.handle_review_panel_key(KeyEvent::new(code, KeyModifiers::empty())));
-            assert_eq!(app.state.review_panel.selected, 1);
+            assert!(app.handle_shitsuji_panel_key(KeyEvent::new(code, KeyModifiers::empty())));
+            assert_eq!(app.state.shitsuji_panel.selected, 1);
         }
         assert!(
-            app.handle_review_panel_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty()))
+            app.handle_shitsuji_panel_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty()))
         );
-        assert_eq!(app.state.review_panel.selected, 0);
+        assert_eq!(app.state.shitsuji_panel.selected, 0);
     }
 
     #[test]
-    fn focused_review_panel_escape_and_q_collapse_immediately() {
+    fn focused_shitsuji_panel_escape_and_q_collapse_immediately() {
         let mut app = test_app();
         for code in [KeyCode::Esc, KeyCode::Char('q')] {
-            app.state.review_panel.open_manually();
-            assert!(app.handle_review_panel_key(KeyEvent::new(code, KeyModifiers::empty())));
-            assert!(!app.state.review_panel.is_expanded());
-            assert!(!app.state.review_panel.keyboard_focused);
+            app.state.shitsuji_panel.open_manually();
+            assert!(app.handle_shitsuji_panel_key(KeyEvent::new(code, KeyModifiers::empty())));
+            assert!(!app.state.shitsuji_panel.is_expanded());
+            assert!(!app.state.shitsuji_panel.keyboard_focused);
         }
     }
 
     #[test]
-    fn focused_review_panel_page_scroll_clamps_to_selected_rule() {
+    fn focused_shitsuji_panel_page_scroll_clamps_to_selected_rule() {
         let mut app = test_app();
         app.state
-            .review_panel
+            .shitsuji_panel
             .replace_proposals(vec![crate::app::state::RuleProposalView {
                 proposal_id: "long".to_string(),
-                rule_text: "A long proposed rule that wraps across the review drawer. ".repeat(30),
-                target_profile_id: "review-agent".to_string(),
+                rule_text: "A long proposed rule that wraps across the shitsuji drawer. "
+                    .repeat(30),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 1,
             }]);
-        app.state.review_panel.open_manually();
-        app.state.view.review_panel_rect = ratatui::layout::Rect::new(0, 0, 36, 20);
-        let max_scroll = crate::ui::max_review_panel_scroll(
-            &app.state.review_panel,
-            app.state.view.review_panel_rect,
+        app.state.shitsuji_panel.open_manually();
+        app.state.view.shitsuji_panel_rect = ratatui::layout::Rect::new(0, 0, 36, 20);
+        let max_scroll = crate::ui::max_shitsuji_panel_scroll(
+            &app.state.shitsuji_panel,
+            app.state.view.shitsuji_panel_rect,
         );
         assert!(max_scroll > 0);
 
         for _ in 0..20 {
-            assert!(app
-                .handle_review_panel_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::empty())));
+            assert!(app.handle_shitsuji_panel_key(KeyEvent::new(
+                KeyCode::PageDown,
+                KeyModifiers::empty()
+            )));
         }
-        assert_eq!(app.state.review_panel.scroll, max_scroll);
+        assert_eq!(app.state.shitsuji_panel.scroll, max_scroll);
 
         for _ in 0..20 {
-            assert!(
-                app.handle_review_panel_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::empty()))
-            );
+            assert!(app
+                .handle_shitsuji_panel_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::empty())));
         }
-        assert_eq!(app.state.review_panel.scroll, 0);
+        assert_eq!(app.state.shitsuji_panel.scroll, 0);
     }
 
     #[tokio::test]

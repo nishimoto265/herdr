@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::review_agent::RuleProposalId;
+use crate::shitsuji_agent::RuleProposalId;
 
 fn protocol_schema_entry<T: schemars::JsonSchema>(name: &str) -> serde_json::Value {
     let mut schema = serde_json::to_value(schemars::schema_for!(T)).unwrap();
@@ -63,20 +63,20 @@ fn request_uses_dot_method_names() {
 }
 
 #[test]
-fn review_rule_proposal_methods_round_trip() {
+fn shitsuji_rule_proposal_methods_round_trip() {
     let requests = [
         Request {
-            id: "review-submit".into(),
-            method: Method::ReviewRuleProposalSubmit(RuleProposalSubmitParams {
+            id: "shitsuji-submit".into(),
+            method: Method::ShitsujiRuleProposalSubmit(RuleProposalSubmitParams {
                 rule_text: "Check affected callers.".into(),
-                target_profile_id: ReviewBackendProfileId::new("review-agent"),
+                target_profile_id: ShitsujiBackendProfileId::new("shitsuji-agent"),
                 fingerprint: "check-callers".into(),
                 source_event_id: "completion-1".into(),
             }),
         },
         Request {
-            id: "review-list".into(),
-            method: Method::ReviewRuleProposalList(RuleProposalListParams {
+            id: "shitsuji-list".into(),
+            method: Method::ShitsujiRuleProposalList(RuleProposalListParams {
                 status: Some(RuleProposalStatus::Pending),
             }),
         },
@@ -90,34 +90,57 @@ fn review_rule_proposal_methods_round_trip() {
 }
 
 #[test]
-fn review_rule_proposal_event_round_trips() {
+fn shitsuji_rule_proposal_event_round_trips() {
     let proposal = RuleProposal {
         proposal_id: RuleProposalId::new("rule-proposal-1"),
         rule_text: "Check affected callers.".into(),
-        target_profile_id: ReviewBackendProfileId::new("review-agent"),
+        target_profile_id: ShitsujiBackendProfileId::new("shitsuji-agent"),
         fingerprint: "check-callers".into(),
         source_event_ids: vec!["completion-1".into(), "completion-2".into()],
         status: RuleProposalStatus::Pending,
         revision: 1,
     };
     let event = EventEnvelope {
-        event: EventKind::ReviewRuleProposalChanged,
-        data: EventData::ReviewRuleProposalChanged {
+        event: EventKind::ShitsujiRuleProposalChanged,
+        data: EventData::ShitsujiRuleProposalChanged {
             proposal,
             change: RuleProposalChange::Proposed,
         },
     };
 
     let json = serde_json::to_value(&event).unwrap();
-    assert_eq!(json["event"], "review_rule_proposal_changed");
+    assert_eq!(json["event"], "shitsuji_rule_proposal_changed");
     let restored: EventEnvelope = serde_json::from_value(json).unwrap();
     assert_eq!(restored, event);
 
-    let subscription = Subscription::ReviewRuleProposalChanged {};
+    let subscription = Subscription::ShitsujiRuleProposalChanged {};
     let json = serde_json::to_value(&subscription).unwrap();
-    assert_eq!(json["type"], "review.rule_proposal.changed");
+    assert_eq!(json["type"], "shitsuji.rule_proposal.changed");
     let restored: Subscription = serde_json::from_value(json).unwrap();
     assert_eq!(restored, subscription);
+}
+
+#[test]
+fn pre_rename_rule_proposal_names_are_rejected() {
+    // Assert on `unknown variant` rather than on any error: a live variant with
+    // missing params also fails to deserialize, so `is_err()` alone would pass
+    // even if the pre-rename name were still accepted.
+    for method in [
+        "review.rule_proposal.submit", // pre-rename
+        "review.rule_proposal.list",   // pre-rename
+    ] {
+        let json = format!(r#"{{"id":"legacy","method":"{method}","params":{{}}}}"#);
+        let err = serde_json::from_str::<Request>(&json)
+            .expect_err("the pre-rename method should no longer be accepted")
+            .to_string();
+        assert!(err.contains("unknown variant"), "{method}: {err}");
+    }
+
+    let subscription = serde_json::json!({"type": "review.rule_proposal.changed"}); // pre-rename
+    let err = serde_json::from_value::<Subscription>(subscription)
+        .expect_err("the pre-rename subscription should no longer be accepted")
+        .to_string();
+    assert!(err.contains("unknown variant"), "{err}");
 }
 
 #[test]

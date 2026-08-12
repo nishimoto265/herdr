@@ -13,9 +13,9 @@ mod navigator;
 mod onboarding;
 mod panes;
 mod release_notes;
-mod review_agent;
 mod scrollbar;
 mod settings;
+mod shitsuji_agent;
 mod sidebar;
 mod status;
 mod tabs;
@@ -48,16 +48,16 @@ pub(crate) use self::release_notes::{
     RELEASE_NOTES_MODAL_SIZE,
 };
 use self::release_notes::{render_product_announcement_overlay, render_release_notes_overlay};
-use self::review_agent::render_review_panel;
-pub(crate) use self::review_agent::{
-    compute_review_panel_hit_areas, compute_review_panel_layout, max_review_panel_scroll,
-    review_panel_handle_slot, review_panel_page_height,
-};
 pub(crate) use self::scrollbar::{
     pane_scrollbar_rect, release_notes_scrollbar_rect, scrollbar_offset_from_drag_row,
     scrollbar_offset_from_row, scrollbar_thumb_grab_offset, should_show_scrollbar,
 };
 use self::settings::render_settings_overlay;
+use self::shitsuji_agent::render_shitsuji_panel;
+pub(crate) use self::shitsuji_agent::{
+    compute_shitsuji_panel_hit_areas, compute_shitsuji_panel_layout, max_shitsuji_panel_scroll,
+    shitsuji_panel_handle_slot, shitsuji_panel_page_height,
+};
 use self::sidebar::{render_sidebar, render_sidebar_collapsed};
 use self::status::{
     copy_feedback_rect, render_config_diagnostic, render_copy_feedback, render_toast_notification,
@@ -234,9 +234,9 @@ fn compute_view_internal(
     let [sidebar_area, available_main_area] =
         Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(1)]).areas(area);
 
-    let review_layout =
-        compute_review_panel_layout(available_main_area, app.review_panel.is_expanded(), false);
-    let main_area = review_layout.terminal_rect;
+    let shitsuji_layout =
+        compute_shitsuji_panel_layout(available_main_area, app.shitsuji_panel.is_expanded(), false);
+    let main_area = shitsuji_layout.terminal_rect;
 
     let (tab_bar_rect, terminal_area) = app
         .active
@@ -262,8 +262,8 @@ fn compute_view_internal(
         compute_workspace_card_areas(app, sidebar_area)
     };
 
-    let handle_slot = review_panel_handle_slot(
-        &app.review_panel,
+    let handle_slot = shitsuji_panel_handle_slot(
+        &app.shitsuji_panel,
         tab_bar_rect,
         MIN_TAB_BAR_CONTENT_WIDTH,
         terminal_area,
@@ -307,12 +307,12 @@ fn compute_view_internal(
         resize_background_tab_panes_for_desktop(app, terminal_runtimes, main_area, cell_size);
     }
 
-    app.review_panel.scroll = app.review_panel.scroll.min(max_review_panel_scroll(
-        &app.review_panel,
-        review_layout.panel_rect,
+    app.shitsuji_panel.scroll = app.shitsuji_panel.scroll.min(max_shitsuji_panel_scroll(
+        &app.shitsuji_panel,
+        shitsuji_layout.panel_rect,
     ));
-    let review_panel_hit_areas =
-        compute_review_panel_hit_areas(&app.review_panel, review_layout.panel_rect);
+    let shitsuji_panel_hit_areas =
+        compute_shitsuji_panel_hit_areas(&app.shitsuji_panel, shitsuji_layout.panel_rect);
     let pane_backside_toggle_areas =
         compute_pane_backside_toggle_areas(app, &pane_infos, handle_slot.rect);
 
@@ -339,10 +339,10 @@ fn compute_view_internal(
         tab_scroll_right_hit_area: tab_bar_view.scroll_right_hit_area,
         new_tab_hit_area: tab_bar_view.new_tab_hit_area,
         terminal_area,
-        review_panel_rect: review_layout.panel_rect,
-        review_panel_handle_rect: handle_slot.rect,
-        review_panel_overlay: review_layout.overlay,
-        review_panel_hit_areas,
+        shitsuji_panel_rect: shitsuji_layout.panel_rect,
+        shitsuji_panel_handle_rect: handle_slot.rect,
+        shitsuji_panel_overlay: shitsuji_layout.overlay,
+        shitsuji_panel_hit_areas,
         mobile_header_rect: Rect::default(),
         mobile_menu_hit_area: Rect::default(),
         toast_hit_area,
@@ -397,21 +397,21 @@ fn compute_mobile_view(
     if resize_panes {
         resize_background_tab_panes_to_area(app, terminal_runtimes, terminal_area, cell_size);
     }
-    let handle_slot = review_panel_handle_slot(
-        &app.review_panel,
+    let handle_slot = shitsuji_panel_handle_slot(
+        &app.shitsuji_panel,
         header_rect,
         MIN_MOBILE_HEADER_CONTENT_WIDTH,
         terminal_area,
     );
     let header_hits = compute_mobile_header_hit_areas(app, header_rect, handle_slot.reserved_width);
-    let review_layout =
-        compute_review_panel_layout(terminal_area, app.review_panel.is_expanded(), true);
-    app.review_panel.scroll = app.review_panel.scroll.min(max_review_panel_scroll(
-        &app.review_panel,
-        review_layout.panel_rect,
+    let shitsuji_layout =
+        compute_shitsuji_panel_layout(terminal_area, app.shitsuji_panel.is_expanded(), true);
+    app.shitsuji_panel.scroll = app.shitsuji_panel.scroll.min(max_shitsuji_panel_scroll(
+        &app.shitsuji_panel,
+        shitsuji_layout.panel_rect,
     ));
-    let review_panel_hit_areas =
-        compute_review_panel_hit_areas(&app.review_panel, review_layout.panel_rect);
+    let shitsuji_panel_hit_areas =
+        compute_shitsuji_panel_hit_areas(&app.shitsuji_panel, shitsuji_layout.panel_rect);
     let pane_backside_toggle_areas =
         compute_pane_backside_toggle_areas(app, &pane_infos, handle_slot.rect);
 
@@ -431,10 +431,10 @@ fn compute_mobile_view(
         tab_scroll_right_hit_area: Rect::default(),
         new_tab_hit_area: Rect::default(),
         terminal_area,
-        review_panel_rect: review_layout.panel_rect,
-        review_panel_handle_rect: handle_slot.rect,
-        review_panel_overlay: review_layout.overlay,
-        review_panel_hit_areas,
+        shitsuji_panel_rect: shitsuji_layout.panel_rect,
+        shitsuji_panel_handle_rect: handle_slot.rect,
+        shitsuji_panel_overlay: shitsuji_layout.overlay,
+        shitsuji_panel_hit_areas,
         mobile_header_rect: header_rect,
         mobile_menu_hit_area: header_hits.menu,
         toast_hit_area,
@@ -474,7 +474,7 @@ pub fn render_with_runtime_registry(
         render_tab_bar(app, frame, tab_bar_area);
     }
     render_panes(app, terminal_runtimes, frame, terminal_area);
-    render_review_panel(app, frame);
+    render_shitsuji_panel(app, frame);
 
     // Ambient notifications sit above panes, but below interactive overlays.
     render_notifications(app, frame, terminal_area);
@@ -734,9 +734,9 @@ mod tests {
         assert_eq!(app.view.mobile_header_rect, Rect::new(0, 0, 44, 2));
         assert_eq!(app.view.terminal_area, Rect::new(0, 2, 44, 18));
         assert_eq!(app.view.mobile_menu_hit_area.height, 2);
-        // The collapsed review handle owns the right end of the header, so the switch button sits
+        // The collapsed shitsuji handle owns the right end of the header, so the switch button sits
         // just left of it.
-        let handle = app.view.review_panel_handle_rect;
+        let handle = app.view.shitsuji_panel_handle_rect;
         assert_eq!(handle.x + handle.width, 44);
         assert_eq!(
             app.view.mobile_menu_hit_area.x + app.view.mobile_menu_hit_area.width,
@@ -744,7 +744,7 @@ mod tests {
         );
     }
 
-    /// The review handle and the pane backside controls are projected by different modules onto
+    /// The shitsuji handle and the pane backside controls are projected by different modules onto
     /// the same frame, so these pin the seams between them.
     fn app_with_collapsed_handle_and_backside(area: Rect) -> crate::app::state::AppState {
         let mut app = crate::app::state::AppState::test_new();
@@ -755,14 +755,14 @@ mod tests {
         app.workspaces = vec![ws];
         app.active = Some(0);
         app.selected = 0;
-        app.review_panel
+        app.shitsuji_panel
             .replace_proposals(vec![crate::app::state::RuleProposalView {
                 proposal_id: "proposal-1".to_string(),
                 rule_text: "Always verify the focused pane.".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 1,
             }]);
-        app.review_panel.close_manually();
+        app.shitsuji_panel.close_manually();
         compute_view(&mut app, area);
         app
     }
@@ -775,7 +775,7 @@ mod tests {
             Rect::new(0, 0, 44, 20),
         ] {
             let app = app_with_collapsed_handle_and_backside(area);
-            let handle = app.view.review_panel_handle_rect;
+            let handle = app.view.shitsuji_panel_handle_rect;
             assert!(handle.width > 0, "{area:?} produced no handle");
             assert!(
                 !app.view.pane_backside_toggle_areas.is_empty(),
@@ -813,17 +813,17 @@ mod tests {
         app.workspaces = vec![ws];
         app.active = Some(0);
         app.selected = 0;
-        app.review_panel
+        app.shitsuji_panel
             .replace_proposals(vec![crate::app::state::RuleProposalView {
                 proposal_id: "proposal-1".to_string(),
                 rule_text: "Always verify the focused pane.".to_string(),
-                target_profile_id: "review-agent".to_string(),
+                target_profile_id: "shitsuji-agent".to_string(),
                 revision: 1,
             }]);
-        app.review_panel.close_manually();
+        app.shitsuji_panel.close_manually();
         compute_view(&mut app, area);
 
-        let handle = app.view.review_panel_handle_rect;
+        let handle = app.view.shitsuji_panel_handle_rect;
         assert_eq!(app.view.tab_bar_rect, Rect::default());
         assert_eq!(handle.y, app.view.terminal_area.y);
         let toggle = app
@@ -854,7 +854,7 @@ mod tests {
         let area = Rect::new(0, 0, 90, 20);
         let app = app_with_collapsed_handle_and_backside(area);
         let overlays = app.view.terminal_content_overlay_rects();
-        let handle = app.view.review_panel_handle_rect;
+        let handle = app.view.shitsuji_panel_handle_rect;
 
         assert!(
             overlays.contains(&handle),

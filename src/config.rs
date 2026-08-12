@@ -19,8 +19,8 @@ pub use self::{
     },
     model::{
         validated_sidebar_bounds, AgentPanelSortConfig, Config, ConfigReloadReport,
-        ConfigReloadStatus, HostCursorModeConfig, NewTerminalCwdConfig, ReviewAgentConfig,
-        ShellModeConfig, SidebarCollapsedModeConfig, ToastClipboardPosition, ToastConfig,
+        ConfigReloadStatus, HostCursorModeConfig, NewTerminalCwdConfig, ShellModeConfig,
+        ShitsujiAgentConfig, SidebarCollapsedModeConfig, ToastClipboardPosition, ToastConfig,
         ToastDelivery, ToastHerdrPosition, UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
     },
     sound::SoundConfig,
@@ -67,7 +67,7 @@ impl Config {
             .chain(keybind_diags)
             .chain(self.remote_image_paste_key().err())
             .chain(self.ui.sound.diagnostics())
-            .chain(self.review_agent.diagnostic())
+            .chain(self.shitsuji_agent.diagnostic())
             .chain(self.invalid_sidebar_bounds_diagnostic())
             .collect()
     }

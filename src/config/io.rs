@@ -10,8 +10,8 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "keys",
     "onboarding",
     "remote",
-    "review_agent",
     "session",
+    "shitsuji_agent",
     "terminal",
     "theme",
     "ui",
@@ -728,6 +728,38 @@ delivery = "herdr"
         assert_eq!(
             loaded.config.ui.toast.delivery,
             super::super::ToastDelivery::Herdr
+        );
+    }
+
+    #[test]
+    fn load_live_config_accepts_the_shitsuji_section() {
+        let loaded = load_live_config_from_str(
+            r#"
+[shitsuji_agent]
+enabled = true
+backend_argv = ["codex"]
+"#,
+        )
+        .unwrap();
+
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    }
+
+    #[test]
+    fn load_live_config_treats_the_pre_rename_shitsuji_section_as_unknown() {
+        let loaded = load_live_config_from_str(
+            r#"
+[review_agent] # pre-rename
+enabled = true
+backend_profile_id = "shitsuji-agent"
+backend_argv = ["codex"]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            loaded.diagnostics,
+            vec!["unknown config section [review_agent]; ignoring section"] // pre-rename
         );
     }
 

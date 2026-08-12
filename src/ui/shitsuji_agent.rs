@@ -7,26 +7,26 @@ use ratatui::{
 };
 
 use crate::app::state::{
-    AppState, ReviewDecisionHitArea, ReviewPanelHitAreas, ReviewPanelState, RuleProposalView,
+    AppState, RuleProposalView, ShitsujiDecisionHitArea, ShitsujiPanelHitAreas, ShitsujiPanelState,
 };
-use crate::review_agent::{RuleProposalDecision, RuleProposalDecisionRequest, RuleProposalId};
+use crate::shitsuji_agent::{RuleProposalDecision, RuleProposalDecisionRequest, RuleProposalId};
 
-pub(crate) const REVIEW_PANEL_EXPANDED_WIDTH: u16 = 40;
-pub(crate) const REVIEW_PANEL_MIN_WIDTH: u16 = 36;
+pub(crate) const SHITSUJI_PANEL_EXPANDED_WIDTH: u16 = 40;
+pub(crate) const SHITSUJI_PANEL_MIN_WIDTH: u16 = 36;
 /// Display width of the widest collapsed label, `[‹ Rules 99+]`.
-pub(crate) const REVIEW_PANEL_HANDLE_WIDTH: u16 = 13;
-pub(crate) const REVIEW_PANEL_MIN_TERMINAL_WIDTH: u16 = 30;
+pub(crate) const SHITSUJI_PANEL_HANDLE_WIDTH: u16 = 13;
+pub(crate) const SHITSUJI_PANEL_MIN_TERMINAL_WIDTH: u16 = 30;
 /// `RULE` label and the blank line under it.
-const REVIEW_CARD_HEADER_ROWS: usize = 2;
+const SHITSUJI_CARD_HEADER_ROWS: usize = 2;
 /// Blank, `ASSIGNED AGENT`, its value, blank, and the decision row, pinned to the body bottom so
 /// the buttons stay visible and clickable no matter how far the rule text scrolls.
-const REVIEW_CARD_FOOTER_ROWS: usize = 5;
-/// Conventional profile id of the bundled review agent. `review_agent.backend_profile_id` has no
+const SHITSUJI_CARD_FOOTER_ROWS: usize = 5;
+/// Conventional profile id of the bundled shitsuji agent. `shitsuji_agent.backend_profile_id` has no
 /// default, so any other configured id is shown verbatim.
-const REVIEW_AGENT_PROFILE_ID: &str = "review-agent";
+const SHITSUJI_AGENT_PROFILE_ID: &str = "shitsuji-agent";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ReviewCardLayout {
+struct ShitsujiCardLayout {
     rule_lines: usize,
     rule_viewport: usize,
     target_offset: usize,
@@ -34,23 +34,23 @@ struct ReviewCardLayout {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct ReviewPanelLayout {
+pub(crate) struct ShitsujiPanelLayout {
     pub terminal_rect: Rect,
     pub panel_rect: Rect,
     pub overlay: bool,
 }
 
-pub(crate) fn compute_review_panel_layout(
+pub(crate) fn compute_shitsuji_panel_layout(
     area: Rect,
     expanded: bool,
     mobile: bool,
-) -> ReviewPanelLayout {
+) -> ShitsujiPanelLayout {
     if area.width == 0 || area.height == 0 {
-        return ReviewPanelLayout::default();
+        return ShitsujiPanelLayout::default();
     }
 
     if !expanded {
-        return ReviewPanelLayout {
+        return ShitsujiPanelLayout {
             terminal_rect: area,
             panel_rect: Rect::default(),
             overlay: true,
@@ -58,13 +58,13 @@ pub(crate) fn compute_review_panel_layout(
     }
 
     let can_dock = !mobile
-        && area.width >= REVIEW_PANEL_MIN_TERMINAL_WIDTH.saturating_add(REVIEW_PANEL_MIN_WIDTH);
+        && area.width >= SHITSUJI_PANEL_MIN_TERMINAL_WIDTH.saturating_add(SHITSUJI_PANEL_MIN_WIDTH);
     if can_dock {
-        let panel_width = REVIEW_PANEL_EXPANDED_WIDTH
-            .min(area.width.saturating_sub(REVIEW_PANEL_MIN_TERMINAL_WIDTH))
-            .max(REVIEW_PANEL_MIN_WIDTH);
+        let panel_width = SHITSUJI_PANEL_EXPANDED_WIDTH
+            .min(area.width.saturating_sub(SHITSUJI_PANEL_MIN_TERMINAL_WIDTH))
+            .max(SHITSUJI_PANEL_MIN_WIDTH);
         let terminal_width = area.width.saturating_sub(panel_width);
-        return ReviewPanelLayout {
+        return ShitsujiPanelLayout {
             terminal_rect: Rect::new(area.x, area.y, terminal_width, area.height),
             panel_rect: Rect::new(
                 area.x.saturating_add(terminal_width),
@@ -76,17 +76,17 @@ pub(crate) fn compute_review_panel_layout(
         };
     }
 
-    let horizontal_margin = if area.width > REVIEW_PANEL_MIN_WIDTH {
+    let horizontal_margin = if area.width > SHITSUJI_PANEL_MIN_WIDTH {
         2
     } else {
         0
     };
     let vertical_margin = if area.height > 12 { 1 } else { 0 };
-    let panel_width = REVIEW_PANEL_EXPANDED_WIDTH
+    let panel_width = SHITSUJI_PANEL_EXPANDED_WIDTH
         .min(area.width.saturating_sub(horizontal_margin * 2))
         .max(1);
     let panel_height = area.height.saturating_sub(vertical_margin * 2).max(1);
-    ReviewPanelLayout {
+    ShitsujiPanelLayout {
         terminal_rect: area,
         panel_rect: Rect::new(
             area.x
@@ -104,7 +104,7 @@ pub(crate) fn compute_review_panel_layout(
 /// Both come from one call so a row can never reserve columns the handle does not take, or lose
 /// the handle to a row that never made room.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct ReviewPanelHandleSlot {
+pub(crate) struct ShitsujiPanelHandleSlot {
     pub reserved_width: u16,
     pub rect: Rect,
 }
@@ -112,22 +112,22 @@ pub(crate) struct ReviewPanelHandleSlot {
 /// `chrome_min_content_width` is what the host row needs for its own controls. A row that cannot
 /// spare the handle keeps all of its columns and the handle falls back to the top row of
 /// `terminal_rect` — the only path where it overlaps terminal content.
-pub(crate) fn review_panel_handle_slot(
-    panel: &ReviewPanelState,
+pub(crate) fn shitsuji_panel_handle_slot(
+    panel: &ShitsujiPanelState,
     chrome_row: Rect,
     chrome_min_content_width: u16,
     terminal_rect: Rect,
-) -> ReviewPanelHandleSlot {
+) -> ShitsujiPanelHandleSlot {
     if panel.is_expanded() {
-        return ReviewPanelHandleSlot::default();
+        return ShitsujiPanelHandleSlot::default();
     }
     let chrome_fits = chrome_row.width > 0
         && chrome_row.height > 0
-        && chrome_row.width >= REVIEW_PANEL_HANDLE_WIDTH.saturating_add(chrome_min_content_width);
+        && chrome_row.width >= SHITSUJI_PANEL_HANDLE_WIDTH.saturating_add(chrome_min_content_width);
     let (host, reserved_width) = if chrome_fits {
         (
             Rect::new(chrome_row.x, chrome_row.y, chrome_row.width, 1),
-            REVIEW_PANEL_HANDLE_WIDTH,
+            SHITSUJI_PANEL_HANDLE_WIDTH,
         )
     } else if terminal_rect.width > 0 && terminal_rect.height > 0 {
         (
@@ -135,10 +135,10 @@ pub(crate) fn review_panel_handle_slot(
             0,
         )
     } else {
-        return ReviewPanelHandleSlot::default();
+        return ShitsujiPanelHandleSlot::default();
     };
-    let width = REVIEW_PANEL_HANDLE_WIDTH.min(host.width);
-    ReviewPanelHandleSlot {
+    let width = SHITSUJI_PANEL_HANDLE_WIDTH.min(host.width);
+    ShitsujiPanelHandleSlot {
         reserved_width,
         rect: Rect::new(
             host.x.saturating_add(host.width.saturating_sub(width)),
@@ -149,12 +149,12 @@ pub(crate) fn review_panel_handle_slot(
     }
 }
 
-pub(crate) fn compute_review_panel_hit_areas(
-    panel: &ReviewPanelState,
+pub(crate) fn compute_shitsuji_panel_hit_areas(
+    panel: &ShitsujiPanelState,
     panel_rect: Rect,
-) -> ReviewPanelHitAreas {
+) -> ShitsujiPanelHitAreas {
     if panel_rect.width < 4 || panel_rect.height < 3 {
-        return ReviewPanelHitAreas::default();
+        return ShitsujiPanelHitAreas::default();
     }
     let inner = Rect::new(
         panel_rect.x.saturating_add(1),
@@ -172,9 +172,9 @@ pub(crate) fn compute_review_panel_hit_areas(
     let mut decisions = Vec::new();
     if let (Some(proposal), Some(card)) = (
         panel.proposals.get(panel.selected),
-        selected_review_card_layout(panel, panel_rect),
+        selected_shitsuji_card_layout(panel, panel_rect),
     ) {
-        if review_panel_body_height(panel_rect) > 0 {
+        if shitsuji_panel_body_height(panel_rect) > 0 {
             let button_y = body_y.saturating_add(saturating_u16(card.button_offset));
             let gap = 1;
             let button_width = inner.width.saturating_sub(gap) / 2;
@@ -189,7 +189,7 @@ pub(crate) fn compute_review_panel_hit_areas(
                 (reject, RuleProposalDecision::Reject),
                 (approve, RuleProposalDecision::Approve),
             ] {
-                decisions.push(ReviewDecisionHitArea {
+                decisions.push(ShitsujiDecisionHitArea {
                     rect,
                     request: RuleProposalDecisionRequest {
                         proposal_id: RuleProposalId::new(&proposal.proposal_id),
@@ -200,18 +200,18 @@ pub(crate) fn compute_review_panel_hit_areas(
             }
         }
     }
-    ReviewPanelHitAreas { close, decisions }
+    ShitsujiPanelHitAreas { close, decisions }
 }
 
-pub(crate) fn max_review_panel_scroll(panel: &ReviewPanelState, panel_rect: Rect) -> usize {
-    selected_review_card_layout(panel, panel_rect)
+pub(crate) fn max_shitsuji_panel_scroll(panel: &ShitsujiPanelState, panel_rect: Rect) -> usize {
+    selected_shitsuji_card_layout(panel, panel_rect)
         .filter(|card| card.rule_viewport > 0)
         .map(|card| card.rule_lines.saturating_sub(card.rule_viewport))
         .unwrap_or(0)
 }
 
-pub(crate) fn review_panel_page_height(panel_rect: Rect) -> usize {
-    review_rule_viewport_height(panel_rect).max(1)
+pub(crate) fn shitsuji_panel_page_height(panel_rect: Rect) -> usize {
+    shitsuji_rule_viewport_height(panel_rect).max(1)
 }
 
 /// ratatui draws block titles left, then center, then right, so each one overdraws the previous.
@@ -239,11 +239,11 @@ fn position_shown(panel_width: u16, position_len: usize) -> bool {
     start.saturating_add(position_len) < title_width.saturating_sub(3)
 }
 
-pub(super) fn render_review_panel(app: &AppState, frame: &mut Frame) {
-    let panel = &app.review_panel;
+pub(super) fn render_shitsuji_panel(app: &AppState, frame: &mut Frame) {
+    let panel = &app.shitsuji_panel;
     let p = &app.palette;
-    let panel_rect = app.view.review_panel_rect;
-    let handle_rect = app.view.review_panel_handle_rect;
+    let panel_rect = app.view.shitsuji_panel_rect;
+    let handle_rect = app.view.shitsuji_panel_handle_rect;
 
     if handle_rect.width > 0 && handle_rect.height > 0 {
         let pending = panel.proposals.len();
@@ -270,7 +270,7 @@ pub(super) fn render_review_panel(app: &AppState, frame: &mut Frame) {
     if panel_rect.width == 0 || panel_rect.height == 0 {
         return;
     }
-    if app.view.review_panel_overlay {
+    if app.view.shitsuji_panel_overlay {
         frame.render_widget(Clear, panel_rect);
     }
     let border_style = if panel.keyboard_focused {
@@ -318,7 +318,7 @@ pub(super) fn render_review_panel(app: &AppState, frame: &mut Frame) {
         return;
     }
     frame.render_widget(
-        Paragraph::new(Span::styled("Review Agent", Style::default().fg(p.mauve))),
+        Paragraph::new(Span::styled("Shitsuji Agent", Style::default().fg(p.mauve))),
         inner,
     );
 
@@ -349,7 +349,7 @@ pub(super) fn render_review_panel(app: &AppState, frame: &mut Frame) {
 
     if let (Some(proposal), Some(card)) = (
         panel.proposals.get(panel.selected),
-        selected_review_card_layout(panel, panel_rect),
+        selected_shitsuji_card_layout(panel, panel_rect),
     ) {
         render_card(app, frame, body, proposal, card);
     }
@@ -360,9 +360,9 @@ fn render_card(
     frame: &mut Frame,
     body: Rect,
     proposal: &RuleProposalView,
-    layout: ReviewCardLayout,
+    layout: ShitsujiCardLayout,
 ) {
-    let panel = &app.review_panel;
+    let panel = &app.shitsuji_panel;
     let p = &app.palette;
     let content_x = body.x.saturating_add(1);
     let content_width = body.width.saturating_sub(2);
@@ -391,7 +391,7 @@ fn render_card(
             Rect::new(
                 content_x,
                 body.y
-                    .saturating_add(saturating_u16(REVIEW_CARD_HEADER_ROWS)),
+                    .saturating_add(saturating_u16(SHITSUJI_CARD_HEADER_ROWS)),
                 content_width,
                 saturating_u16(layout.rule_viewport),
             ),
@@ -424,7 +424,7 @@ fn render_card(
             target_value_rect,
         );
     }
-    for hit in app.view.review_panel_hit_areas.decisions.iter() {
+    for hit in app.view.shitsuji_panel_hit_areas.decisions.iter() {
         let (label, color) = match hit.request.decision {
             RuleProposalDecision::Reject => ("[ R  Reject ]", p.red),
             RuleProposalDecision::Approve => ("[ A  Approve ]", p.green),
@@ -439,37 +439,37 @@ fn render_card(
 }
 
 fn assigned_agent_label(target_profile_id: &str) -> &str {
-    if target_profile_id == REVIEW_AGENT_PROFILE_ID {
-        "Review Agent"
+    if target_profile_id == SHITSUJI_AGENT_PROFILE_ID {
+        "Shitsuji Agent"
     } else {
         target_profile_id
     }
 }
 
-fn review_panel_body_height(panel_rect: Rect) -> usize {
+fn shitsuji_panel_body_height(panel_rect: Rect) -> usize {
     usize::from(panel_rect.height.saturating_sub(4))
 }
 
-fn review_rule_viewport_height(panel_rect: Rect) -> usize {
-    review_panel_body_height(panel_rect)
-        .saturating_sub(REVIEW_CARD_HEADER_ROWS)
-        .saturating_sub(REVIEW_CARD_FOOTER_ROWS)
+fn shitsuji_rule_viewport_height(panel_rect: Rect) -> usize {
+    shitsuji_panel_body_height(panel_rect)
+        .saturating_sub(SHITSUJI_CARD_HEADER_ROWS)
+        .saturating_sub(SHITSUJI_CARD_FOOTER_ROWS)
 }
 
-fn selected_review_card_layout(
-    panel: &ReviewPanelState,
+fn selected_shitsuji_card_layout(
+    panel: &ShitsujiPanelState,
     panel_rect: Rect,
-) -> Option<ReviewCardLayout> {
+) -> Option<ShitsujiCardLayout> {
     let text_width = panel_rect.width.saturating_sub(4).max(1);
     let proposal = panel.proposals.get(panel.selected)?;
     let rule_lines = Paragraph::new(proposal.rule_text.as_str())
         .wrap(Wrap { trim: true })
         .line_count(text_width)
         .max(1);
-    let body_height = review_panel_body_height(panel_rect);
-    Some(ReviewCardLayout {
+    let body_height = shitsuji_panel_body_height(panel_rect);
+    Some(ShitsujiCardLayout {
         rule_lines,
-        rule_viewport: review_rule_viewport_height(panel_rect),
+        rule_viewport: shitsuji_rule_viewport_height(panel_rect),
         target_offset: body_height.saturating_sub(4),
         button_offset: body_height.saturating_sub(1),
     })
@@ -493,8 +493,8 @@ mod tests {
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
                 .expect("test terminal");
         terminal
-            .draw(|frame| render_review_panel(app, frame))
-            .expect("render review panel");
+            .draw(|frame| render_shitsuji_panel(app, frame))
+            .expect("render shitsuji panel");
         terminal.backend().buffer().clone()
     }
 
@@ -506,14 +506,14 @@ mod tests {
         RuleProposalView {
             proposal_id: id.to_string(),
             rule_text: format!("Rule {id}"),
-            target_profile_id: "review-agent".to_string(),
+            target_profile_id: "shitsuji-agent".to_string(),
             revision,
         }
     }
 
     #[test]
     fn auto_and_manual_visibility_transitions_are_sticky() {
-        let mut panel = ReviewPanelState::default();
+        let mut panel = ShitsujiPanelState::default();
         assert!(!panel.is_expanded());
 
         panel.replace_proposals(vec![proposal("one", 1)]);
@@ -534,14 +534,14 @@ mod tests {
 
     #[test]
     fn deciding_last_proposal_collapses_but_manual_empty_view_can_reopen() {
-        let mut panel = ReviewPanelState::default();
+        let mut panel = ShitsujiPanelState::default();
         panel.replace_proposals(vec![proposal("one", 1)]);
         panel.open_manually();
 
         panel.replace_proposals_after_decision(Vec::new());
         assert_eq!(
             panel.visibility,
-            crate::app::state::ReviewPanelVisibility::Auto
+            crate::app::state::ShitsujiPanelVisibility::Auto
         );
         assert!(!panel.is_expanded());
         assert!(!panel.keyboard_focused);
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn replacing_selected_proposal_resets_its_scroll() {
-        let mut panel = ReviewPanelState::default();
+        let mut panel = ShitsujiPanelState::default();
         panel.replace_proposals(vec![proposal("one", 1), proposal("two", 1)]);
         panel.scroll = 5;
 
@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn a_surviving_selection_follows_its_proposal_and_keeps_its_scroll() {
-        let mut panel = ReviewPanelState::default();
+        let mut panel = ShitsujiPanelState::default();
         panel.replace_proposals(vec![proposal("one", 1), proposal("two", 1)]);
         panel.selected = 1;
         panel.scroll = 5;
@@ -583,10 +583,10 @@ mod tests {
 
     #[test]
     fn docked_layout_keeps_terminal_and_panel_disjoint() {
-        let layout = compute_review_panel_layout(Rect::new(20, 0, 100, 30), true, false);
+        let layout = compute_shitsuji_panel_layout(Rect::new(20, 0, 100, 30), true, false);
         assert!(!layout.overlay);
-        assert!(layout.terminal_rect.width >= REVIEW_PANEL_MIN_TERMINAL_WIDTH);
-        assert!(layout.panel_rect.width >= REVIEW_PANEL_MIN_WIDTH);
+        assert!(layout.terminal_rect.width >= SHITSUJI_PANEL_MIN_TERMINAL_WIDTH);
+        assert!(layout.panel_rect.width >= SHITSUJI_PANEL_MIN_WIDTH);
         assert_eq!(
             layout.terminal_rect.x + layout.terminal_rect.width,
             layout.panel_rect.x
@@ -599,7 +599,7 @@ mod tests {
             (Rect::new(20, 0, 60, 20), false),
             (Rect::new(0, 0, 44, 20), true),
         ] {
-            let layout = compute_review_panel_layout(area, true, mobile);
+            let layout = compute_shitsuji_panel_layout(area, true, mobile);
             assert!(layout.overlay);
             assert_eq!(layout.terminal_rect, area);
             assert!(layout.panel_rect.width <= area.width);
@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn collapsed_layout_leaves_the_terminal_whole_and_defers_handle_placement() {
         let area = Rect::new(26, 0, 74, 24);
-        let layout = compute_review_panel_layout(area, false, false);
+        let layout = compute_shitsuji_panel_layout(area, false, false);
         assert_eq!(layout.terminal_rect, area);
         assert_eq!(layout.panel_rect, Rect::default());
     }
@@ -619,9 +619,9 @@ mod tests {
         let tab_bar = Rect::new(26, 4, 74, 1);
         let terminal = Rect::new(26, 5, 74, 20);
         let handle =
-            review_panel_handle_slot(&ReviewPanelState::default(), tab_bar, 17, terminal).rect;
+            shitsuji_panel_handle_slot(&ShitsujiPanelState::default(), tab_bar, 17, terminal).rect;
 
-        assert_eq!(handle.width, REVIEW_PANEL_HANDLE_WIDTH);
+        assert_eq!(handle.width, SHITSUJI_PANEL_HANDLE_WIDTH);
         assert_eq!(handle.height, 1);
         assert_eq!(handle.y, tab_bar.y);
         assert_eq!(handle.x + handle.width, tab_bar.x + tab_bar.width);
@@ -630,20 +630,20 @@ mod tests {
 
     #[test]
     fn a_chrome_row_too_narrow_to_spare_the_handle_keeps_all_of_its_columns() {
-        let panel = ReviewPanelState::default();
+        let panel = ShitsujiPanelState::default();
         let terminal = Rect::new(0, 1, 40, 20);
         let min_content = 17;
 
-        let roomy = Rect::new(0, 0, REVIEW_PANEL_HANDLE_WIDTH + min_content, 1);
-        let roomy_slot = review_panel_handle_slot(&panel, roomy, min_content, terminal);
-        assert_eq!(roomy_slot.reserved_width, REVIEW_PANEL_HANDLE_WIDTH);
+        let roomy = Rect::new(0, 0, SHITSUJI_PANEL_HANDLE_WIDTH + min_content, 1);
+        let roomy_slot = shitsuji_panel_handle_slot(&panel, roomy, min_content, terminal);
+        assert_eq!(roomy_slot.reserved_width, SHITSUJI_PANEL_HANDLE_WIDTH);
         assert_eq!(roomy_slot.rect.y, roomy.y);
 
         let cramped = Rect {
             width: roomy.width - 1,
             ..roomy
         };
-        let cramped_slot = review_panel_handle_slot(&panel, cramped, min_content, terminal);
+        let cramped_slot = shitsuji_panel_handle_slot(&panel, cramped, min_content, terminal);
         assert_eq!(
             cramped_slot.reserved_width, 0,
             "a row that cannot spare the handle must keep its columns"
@@ -659,8 +659,8 @@ mod tests {
         let terminal = Rect::new(26, 5, 74, 20);
         for height in [1u16, 2, 7, 20, 40] {
             let terminal = Rect { height, ..terminal };
-            let handle = review_panel_handle_slot(
-                &ReviewPanelState::default(),
+            let handle = shitsuji_panel_handle_slot(
+                &ShitsujiPanelState::default(),
                 Rect::default(),
                 17,
                 terminal,
@@ -676,16 +676,16 @@ mod tests {
 
     #[test]
     fn handle_reservation_is_the_handle_width_until_the_panel_expands() {
-        let mut panel = ReviewPanelState::default();
+        let mut panel = ShitsujiPanelState::default();
         let chrome = Rect::new(0, 0, 60, 1);
         let terminal = Rect::new(0, 1, 60, 20);
         assert_eq!(
-            review_panel_handle_slot(&panel, chrome, 17, terminal).reserved_width,
-            REVIEW_PANEL_HANDLE_WIDTH
+            shitsuji_panel_handle_slot(&panel, chrome, 17, terminal).reserved_width,
+            SHITSUJI_PANEL_HANDLE_WIDTH
         );
 
         panel.open_manually();
-        let expanded = review_panel_handle_slot(&panel, chrome, 17, terminal);
+        let expanded = shitsuji_panel_handle_slot(&panel, chrome, 17, terminal);
         assert_eq!(expanded.reserved_width, 0);
         assert_eq!(expanded.rect, Rect::default());
     }
@@ -693,15 +693,15 @@ mod tests {
     #[test]
     fn collapsed_handles_render_pending_count_and_a_readable_empty_label() {
         let mut app = AppState::test_new();
-        app.view.review_panel_handle_rect = Rect::new(27, 0, 13, 1);
-        app.review_panel
+        app.view.shitsuji_panel_handle_rect = Rect::new(27, 0, 13, 1);
+        app.shitsuji_panel
             .replace_proposals(vec![proposal("one", 1), proposal("two", 1)]);
 
         let pending = render_buffer(&app, 40, 5);
         assert!(buffer_text(&pending).contains("[‹ Rules 2]"));
         assert_eq!(pending[(29, 0)].style().fg, Some(app.palette.yellow));
 
-        app.review_panel.replace_proposals(Vec::new());
+        app.shitsuji_panel.replace_proposals(Vec::new());
         let empty = render_buffer(&app, 40, 5);
         assert!(buffer_text(&empty).contains("[‹ Rules]"));
         assert!(!buffer_text(&empty).contains("[‹ Rules 0]"));
@@ -711,33 +711,33 @@ mod tests {
     #[test]
     fn collapsed_handle_fits_the_capped_pending_count() {
         let mut app = AppState::test_new();
-        app.view.review_panel_handle_rect = Rect::new(0, 0, REVIEW_PANEL_HANDLE_WIDTH, 1);
-        app.review_panel.replace_proposals(
+        app.view.shitsuji_panel_handle_rect = Rect::new(0, 0, SHITSUJI_PANEL_HANDLE_WIDTH, 1);
+        app.shitsuji_panel.replace_proposals(
             (0..100)
                 .map(|idx| proposal(&format!("proposal-{idx}"), 1))
                 .collect(),
         );
 
-        let content = buffer_text(&render_buffer(&app, REVIEW_PANEL_HANDLE_WIDTH, 1));
+        let content = buffer_text(&render_buffer(&app, SHITSUJI_PANEL_HANDLE_WIDTH, 1));
         assert_eq!(content, "[‹ Rules 99+]");
     }
 
     #[test]
     fn a_short_handle_label_still_paints_every_cell_of_its_rect() {
         let mut app = AppState::test_new();
-        app.view.review_panel_handle_rect = Rect::new(0, 0, REVIEW_PANEL_HANDLE_WIDTH, 1);
-        app.review_panel.replace_proposals(Vec::new());
+        app.view.shitsuji_panel_handle_rect = Rect::new(0, 0, SHITSUJI_PANEL_HANDLE_WIDTH, 1);
+        app.shitsuji_panel.replace_proposals(Vec::new());
 
-        let content = buffer_text(&render_buffer(&app, REVIEW_PANEL_HANDLE_WIDTH, 1));
+        let content = buffer_text(&render_buffer(&app, SHITSUJI_PANEL_HANDLE_WIDTH, 1));
         assert_eq!(content, "    [‹ Rules]");
     }
 
     #[test]
     fn decision_hit_areas_preserve_id_revision_and_do_not_overlap() {
-        let mut panel = ReviewPanelState::default();
+        let mut panel = ShitsujiPanelState::default();
         panel.replace_proposals(vec![proposal("one", 7)]);
         let panel_rect = Rect::new(80, 3, 40, 20);
-        let hits = compute_review_panel_hit_areas(&panel, panel_rect);
+        let hits = compute_shitsuji_panel_hit_areas(&panel, panel_rect);
         assert_eq!(hits.decisions.len(), 2);
         assert_eq!(hits.close.y, panel_rect.y);
         assert_eq!(hits.decisions[0].request.proposal_id.as_str(), "one");
@@ -749,10 +749,10 @@ mod tests {
 
     #[test]
     fn decision_hit_areas_only_target_selected_proposal() {
-        let mut panel = ReviewPanelState::default();
+        let mut panel = ShitsujiPanelState::default();
         panel.replace_proposals(vec![proposal("one", 1), proposal("two", 1)]);
         panel.selected = 1;
-        let hits = compute_review_panel_hit_areas(&panel, Rect::new(80, 0, 40, 20));
+        let hits = compute_shitsuji_panel_hit_areas(&panel, Rect::new(80, 0, 40, 20));
         assert_eq!(hits.decisions.len(), 2);
         assert!(hits
             .decisions
@@ -763,12 +763,12 @@ mod tests {
     #[test]
     fn expanded_panel_renders_only_selected_proposal_and_decision_colors() {
         let mut app = AppState::test_new();
-        app.review_panel
+        app.shitsuji_panel
             .replace_proposals(vec![proposal("one", 4), proposal("two", 7)]);
-        app.review_panel.selected = 1;
-        app.view.review_panel_rect = Rect::new(0, 0, 40, 20);
-        app.view.review_panel_hit_areas =
-            compute_review_panel_hit_areas(&app.review_panel, app.view.review_panel_rect);
+        app.shitsuji_panel.selected = 1;
+        app.view.shitsuji_panel_rect = Rect::new(0, 0, 40, 20);
+        app.view.shitsuji_panel_hit_areas =
+            compute_shitsuji_panel_hit_areas(&app.shitsuji_panel, app.view.shitsuji_panel_rect);
 
         let buffer = render_buffer(&app, 40, 20);
         let content = buffer_text(&buffer);
@@ -781,9 +781,9 @@ mod tests {
         assert!(top_row.contains("2 / 2"));
         assert!(top_row.contains("[›]"));
         assert_eq!(buffer[(1, 0)].symbol(), "R");
-        let close = app.view.review_panel_hit_areas.close;
+        let close = app.view.shitsuji_panel_hit_areas.close;
         assert_eq!(buffer[(close.x, close.y)].symbol(), "[");
-        assert!(first_inner_row.contains("Review Agent"));
+        assert!(first_inner_row.contains("Shitsuji Agent"));
         assert!(!first_inner_row.contains("2 / 2"));
         assert!(!first_inner_row.contains("[›]"));
         assert!(content.contains("RULE"));
@@ -795,7 +795,7 @@ mod tests {
 
         let reject = app
             .view
-            .review_panel_hit_areas
+            .shitsuji_panel_hit_areas
             .decisions
             .iter()
             .find(|hit| hit.request.decision == RuleProposalDecision::Reject)
@@ -803,7 +803,7 @@ mod tests {
             .rect;
         let approve = app
             .view
-            .review_panel_hit_areas
+            .shitsuji_panel_hit_areas
             .decisions
             .iter()
             .find(|hit| hit.request.decision == RuleProposalDecision::Approve)
@@ -828,36 +828,36 @@ mod tests {
     #[test]
     fn minimum_expanded_width_keeps_header_labels_disjoint() {
         let mut app = AppState::test_new();
-        app.review_panel.replace_proposals(
+        app.shitsuji_panel.replace_proposals(
             (0..100)
                 .map(|idx| proposal(&format!("proposal-{idx}"), 1))
                 .collect(),
         );
-        app.review_panel.selected = 99;
-        app.view.review_panel_rect = Rect::new(0, 0, REVIEW_PANEL_MIN_WIDTH, 12);
-        app.view.review_panel_hit_areas =
-            compute_review_panel_hit_areas(&app.review_panel, app.view.review_panel_rect);
+        app.shitsuji_panel.selected = 99;
+        app.view.shitsuji_panel_rect = Rect::new(0, 0, SHITSUJI_PANEL_MIN_WIDTH, 12);
+        app.view.shitsuji_panel_hit_areas =
+            compute_shitsuji_panel_hit_areas(&app.shitsuji_panel, app.view.shitsuji_panel_rect);
 
-        let buffer = render_buffer(&app, REVIEW_PANEL_MIN_WIDTH, 12);
-        let top_row = (0..REVIEW_PANEL_MIN_WIDTH)
+        let buffer = render_buffer(&app, SHITSUJI_PANEL_MIN_WIDTH, 12);
+        let top_row = (0..SHITSUJI_PANEL_MIN_WIDTH)
             .map(|x| buffer[(x, 0)].symbol())
             .collect::<String>();
-        assert!(buffer_text(&buffer).contains("Review Agent"));
+        assert!(buffer_text(&buffer).contains("Shitsuji Agent"));
         assert_eq!(top_row, "┌Rules───────100 / 100──────────[›]┐");
     }
 
     #[test]
     fn header_heading_shrinks_only_when_the_position_would_overdraw_it() {
         assert_eq!(
-            heading_for_title_width(REVIEW_PANEL_MIN_WIDTH, 0),
+            heading_for_title_width(SHITSUJI_PANEL_MIN_WIDTH, 0),
             "Rule proposals"
         );
         assert_eq!(
-            heading_for_title_width(REVIEW_PANEL_EXPANDED_WIDTH, "1 / 9".len()),
+            heading_for_title_width(SHITSUJI_PANEL_EXPANDED_WIDTH, "1 / 9".len()),
             "Rule proposals"
         );
         assert_eq!(
-            heading_for_title_width(REVIEW_PANEL_MIN_WIDTH, "100 / 100".len()),
+            heading_for_title_width(SHITSUJI_PANEL_MIN_WIDTH, "100 / 100".len()),
             "Rules"
         );
         // Width 12 drops the position entirely, which frees the left side for the short heading.
@@ -867,18 +867,18 @@ mod tests {
 
     #[test]
     fn a_position_that_the_chevron_would_clip_is_dropped() {
-        assert!(position_shown(REVIEW_PANEL_MIN_WIDTH, "100 / 100".len()));
+        assert!(position_shown(SHITSUJI_PANEL_MIN_WIDTH, "100 / 100".len()));
         assert!(!position_shown(16, "100 / 100".len()));
-        assert!(!position_shown(REVIEW_PANEL_MIN_WIDTH, 0));
+        assert!(!position_shown(SHITSUJI_PANEL_MIN_WIDTH, 0));
     }
 
     #[test]
     fn manually_open_empty_panel_explains_where_rules_will_appear() {
         let mut app = AppState::test_new();
-        app.review_panel.open_manually();
-        app.view.review_panel_rect = Rect::new(0, 0, 40, 12);
-        app.view.review_panel_hit_areas =
-            compute_review_panel_hit_areas(&app.review_panel, app.view.review_panel_rect);
+        app.shitsuji_panel.open_manually();
+        app.view.shitsuji_panel_rect = Rect::new(0, 0, 40, 12);
+        app.view.shitsuji_panel_hit_areas =
+            compute_shitsuji_panel_hit_areas(&app.shitsuji_panel, app.view.shitsuji_panel_rect);
 
         let content = buffer_text(&render_buffer(&app, 40, 12));
         assert!(content.contains("No pending rules"));
@@ -887,43 +887,43 @@ mod tests {
 
     #[test]
     fn narrow_wrapping_lengthens_the_rule_and_its_scroll_range() {
-        let mut panel = ReviewPanelState::default();
+        let mut panel = ShitsujiPanelState::default();
         panel.replace_proposals(vec![RuleProposalView {
             proposal_id: "long".to_string(),
             rule_text:
                 "verify every relevant provider boundary before approving the proposed rule "
                     .repeat(12),
-            target_profile_id: "review-agent".to_string(),
+            target_profile_id: "shitsuji-agent".to_string(),
             revision: 3,
         }]);
 
         let narrow_rect = Rect::new(0, 0, 20, 24);
         let wide_rect = Rect::new(0, 0, 40, 24);
-        let narrow = selected_review_card_layout(&panel, narrow_rect).expect("narrow layout");
-        let wide = selected_review_card_layout(&panel, wide_rect).expect("wide layout");
+        let narrow = selected_shitsuji_card_layout(&panel, narrow_rect).expect("narrow layout");
+        let wide = selected_shitsuji_card_layout(&panel, wide_rect).expect("wide layout");
         assert!(narrow.rule_lines > wide.rule_lines);
         assert_eq!(narrow.rule_viewport, wide.rule_viewport);
         assert!(
-            max_review_panel_scroll(&panel, narrow_rect)
-                > max_review_panel_scroll(&panel, wide_rect)
+            max_shitsuji_panel_scroll(&panel, narrow_rect)
+                > max_shitsuji_panel_scroll(&panel, wide_rect)
         );
     }
 
     #[test]
     fn decision_row_stays_pinned_to_the_body_bottom_for_a_rule_taller_than_the_viewport() {
-        let mut panel = ReviewPanelState::default();
+        let mut panel = ShitsujiPanelState::default();
         panel.replace_proposals(vec![RuleProposalView {
             proposal_id: "long".to_string(),
             rule_text: "wrap this rule across several drawer lines. ".repeat(6),
-            target_profile_id: "review-agent".to_string(),
+            target_profile_id: "shitsuji-agent".to_string(),
             revision: 3,
         }]);
         let panel_rect = Rect::new(0, 0, 40, 12);
-        let card = selected_review_card_layout(&panel, panel_rect).expect("layout");
+        let card = selected_shitsuji_card_layout(&panel, panel_rect).expect("layout");
         assert!(card.rule_lines > card.rule_viewport);
-        assert!(max_review_panel_scroll(&panel, panel_rect) > 0);
+        assert!(max_shitsuji_panel_scroll(&panel, panel_rect) > 0);
 
-        let hits = compute_review_panel_hit_areas(&panel, panel_rect);
+        let hits = compute_shitsuji_panel_hit_areas(&panel, panel_rect);
         assert_eq!(hits.decisions.len(), 2);
         let body_bottom = panel_rect.y + panel_rect.height - 2;
         for hit in &hits.decisions {
@@ -933,20 +933,20 @@ mod tests {
 
     #[test]
     fn a_rule_viewport_squeezed_to_nothing_reports_no_scroll_range() {
-        let mut panel = ReviewPanelState::default();
+        let mut panel = ShitsujiPanelState::default();
         panel.replace_proposals(vec![RuleProposalView {
             proposal_id: "long".to_string(),
             rule_text: "wrap this rule across several drawer lines. ".repeat(6),
-            target_profile_id: "review-agent".to_string(),
+            target_profile_id: "shitsuji-agent".to_string(),
             revision: 3,
         }]);
         let panel_rect = Rect::new(0, 0, 40, 10);
 
-        let card = selected_review_card_layout(&panel, panel_rect).expect("layout");
+        let card = selected_shitsuji_card_layout(&panel, panel_rect).expect("layout");
         assert_eq!(card.rule_viewport, 0);
-        assert_eq!(max_review_panel_scroll(&panel, panel_rect), 0);
+        assert_eq!(max_shitsuji_panel_scroll(&panel, panel_rect), 0);
         assert_eq!(
-            compute_review_panel_hit_areas(&panel, panel_rect)
+            compute_shitsuji_panel_hit_areas(&panel, panel_rect)
                 .decisions
                 .len(),
             2
@@ -956,18 +956,18 @@ mod tests {
     #[test]
     fn scrolling_a_long_rule_hides_the_lines_above_the_viewport() {
         let mut app = AppState::test_new();
-        app.review_panel.replace_proposals(vec![RuleProposalView {
+        app.shitsuji_panel.replace_proposals(vec![RuleProposalView {
             proposal_id: "scroll".to_string(),
             rule_text: "HEAD\nMIDDLE\nTAIL".to_string(),
-            target_profile_id: "review-agent".to_string(),
+            target_profile_id: "shitsuji-agent".to_string(),
             revision: 1,
         }]);
-        app.view.review_panel_rect = Rect::new(0, 0, 40, 13);
-        app.review_panel.scroll =
-            max_review_panel_scroll(&app.review_panel, app.view.review_panel_rect);
-        app.view.review_panel_hit_areas =
-            compute_review_panel_hit_areas(&app.review_panel, app.view.review_panel_rect);
-        assert_eq!(app.review_panel.scroll, 1);
+        app.view.shitsuji_panel_rect = Rect::new(0, 0, 40, 13);
+        app.shitsuji_panel.scroll =
+            max_shitsuji_panel_scroll(&app.shitsuji_panel, app.view.shitsuji_panel_rect);
+        app.view.shitsuji_panel_hit_areas =
+            compute_shitsuji_panel_hit_areas(&app.shitsuji_panel, app.view.shitsuji_panel_rect);
+        assert_eq!(app.shitsuji_panel.scroll, 1);
 
         let content = buffer_text(&render_buffer(&app, 40, 13));
         assert!(content.contains("MIDDLE"));
@@ -979,10 +979,11 @@ mod tests {
     fn a_body_too_short_for_every_row_still_keeps_the_decision_row() {
         for panel_height in 5..=12u16 {
             let mut app = AppState::test_new();
-            app.review_panel.replace_proposals(vec![proposal("one", 1)]);
-            app.view.review_panel_rect = Rect::new(0, 0, 40, panel_height);
-            app.view.review_panel_hit_areas =
-                compute_review_panel_hit_areas(&app.review_panel, app.view.review_panel_rect);
+            app.shitsuji_panel
+                .replace_proposals(vec![proposal("one", 1)]);
+            app.view.shitsuji_panel_rect = Rect::new(0, 0, 40, panel_height);
+            app.view.shitsuji_panel_hit_areas =
+                compute_shitsuji_panel_hit_areas(&app.shitsuji_panel, app.view.shitsuji_panel_rect);
 
             let buffer = render_buffer(&app, 40, panel_height);
             let decision_row = (0..40)
@@ -997,7 +998,7 @@ mod tests {
 
     #[test]
     fn a_non_default_profile_id_is_shown_verbatim() {
-        assert_eq!(assigned_agent_label("review-agent"), "Review Agent");
+        assert_eq!(assigned_agent_label("shitsuji-agent"), "Shitsuji Agent");
         assert_eq!(assigned_agent_label("custom-reviewer"), "custom-reviewer");
     }
 }

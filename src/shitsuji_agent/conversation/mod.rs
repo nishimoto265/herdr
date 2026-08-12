@@ -19,9 +19,9 @@ fn read_complete_records(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
         .map(|line| &line[..line.len() - 1])
 }
 
-pub(crate) type ConversationProvider = crate::review_agent::TranscriptProvider;
+pub(crate) type ConversationProvider = crate::shitsuji_agent::TranscriptProvider;
 
-impl crate::review_agent::TranscriptProvider {
+impl crate::shitsuji_agent::TranscriptProvider {
     pub(crate) fn from_agent(agent: crate::detect::Agent) -> Option<Self> {
         match agent {
             crate::detect::Agent::Claude => Some(Self::Claude),
@@ -296,7 +296,7 @@ mod tests {
     fn temp_root(label: &str) -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let path = std::env::temp_dir().join(format!(
-            "herdr-review-{label}-{}-{}",
+            "herdr-shitsuji-{label}-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));

@@ -11,7 +11,7 @@ use super::conversation::{
 const PERSISTED_DELIVERY_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct PersistedReviewDelivery {
+pub(crate) struct PersistedShitsujiDelivery {
     version: u32,
     fronts: Vec<PersistedFrontDelivery>,
     backends: Vec<PersistedBackendDelivery>,
@@ -185,12 +185,12 @@ impl Default for BackendDelivery {
 /// Pure delivery state. PTY spawning, transcript IO, and byte writes are
 /// represented as actions and performed by the App runtime.
 #[derive(Default)]
-pub(crate) struct ReviewDeliveryState {
+pub(crate) struct ShitsujiDeliveryState {
     fronts: HashMap<PaneId, FrontDelivery>,
     backends: HashMap<PaneId, BackendDelivery>,
 }
 
-impl ReviewDeliveryState {
+impl ShitsujiDeliveryState {
     pub(crate) fn has_in_flight_source_event(&self, source_event_id: &str) -> bool {
         self.backends.values().any(|backend| {
             matches!(
@@ -239,7 +239,7 @@ impl ReviewDeliveryState {
         (state, source_event_id)
     }
 
-    pub(crate) fn persisted(&self) -> PersistedReviewDelivery {
+    pub(crate) fn persisted(&self) -> PersistedShitsujiDelivery {
         let backends = self
             .backends
             .iter()
@@ -274,14 +274,14 @@ impl ReviewDeliveryState {
                 acknowledged_checkpoint: front.acknowledged_checkpoint.clone(),
             })
             .collect();
-        PersistedReviewDelivery {
+        PersistedShitsujiDelivery {
             version: PERSISTED_DELIVERY_VERSION,
             fronts,
             backends,
         }
     }
 
-    pub(crate) fn restore(snapshot: PersistedReviewDelivery) -> Self {
+    pub(crate) fn restore(snapshot: PersistedShitsujiDelivery) -> Self {
         if snapshot.version != PERSISTED_DELIVERY_VERSION {
             return Self::default();
         }
@@ -472,7 +472,7 @@ impl ReviewDeliveryState {
         }
 
         // Detecting a supported front agent assigns and starts its paired
-        // Review Agent even when the front is initially idle. Conversation
+        // Shitsuji Agent even when the front is initially idle. Conversation
         // delivery still begins only on a later work transition.
         let mut actions = self.ensure_assignment(front_pane_id, backside_pane_id);
 
@@ -848,7 +848,7 @@ mod tests {
     }
 
     fn start_generation(
-        state: &mut ReviewDeliveryState,
+        state: &mut ShitsujiDeliveryState,
         front: PaneId,
         back: PaneId,
     ) -> AssignmentIdentity {
@@ -877,7 +877,7 @@ mod tests {
 
     #[test]
     fn initial_idle_starts_backend_once_without_delivering_conversation() {
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         let front = PaneId::alloc();
         let back = PaneId::alloc();
         assert!(matches!(
@@ -905,7 +905,7 @@ mod tests {
 
     #[test]
     fn startup_working_is_ignored_until_idle_arms_persisted_front() {
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         let front = PaneId::alloc();
         let back = PaneId::alloc();
 
@@ -930,7 +930,7 @@ mod tests {
             )
             .is_empty());
 
-        let mut restored = ReviewDeliveryState::restore(state.persisted());
+        let mut restored = ShitsujiDeliveryState::restore(state.persisted());
         let first_real_turn = restored.observe_front_state(
             front,
             back,
@@ -949,7 +949,7 @@ mod tests {
 
     #[test]
     fn ensured_assignment_does_not_start_same_backend_twice() {
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         let front = PaneId::alloc();
         let back = PaneId::alloc();
 
@@ -962,7 +962,7 @@ mod tests {
 
     #[test]
     fn idle_before_resolution_probes_after_binding_arrives() {
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         let front = PaneId::alloc();
         let back = PaneId::alloc();
         let assignment = start_generation(&mut state, front, back);
@@ -988,7 +988,7 @@ mod tests {
 
     #[test]
     fn next_working_generation_keeps_completed_pending_resolution() {
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         let front = PaneId::alloc();
         let back = PaneId::alloc();
         let stale = start_generation(&mut state, front, back);
@@ -1028,7 +1028,7 @@ mod tests {
 
     #[test]
     fn backend_busy_keeps_completed_turns_fifo() {
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         let front = PaneId::alloc();
         let back = PaneId::alloc();
         let first = start_generation(&mut state, front, back);
@@ -1094,7 +1094,7 @@ mod tests {
 
     #[test]
     fn send_failure_requeues_and_restart_redelivers_role_first() {
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         let front = PaneId::alloc();
         let back = PaneId::alloc();
         let assignment = start_generation(&mut state, front, back);
@@ -1139,7 +1139,7 @@ mod tests {
 
     #[test]
     fn replacement_drops_role_sent_to_old_runtime_and_roles_fresh_backend() {
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         let front = PaneId::alloc();
         let back = PaneId::alloc();
         state.ensure_assignment(front, back);
@@ -1179,7 +1179,7 @@ mod tests {
                 identity: [10; 32],
             },
         };
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         state.backends.insert(
             back,
             BackendDelivery {
@@ -1222,7 +1222,7 @@ mod tests {
                 identity: [10; 32],
             },
         };
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         state.backends.insert(
             back,
             BackendDelivery {
@@ -1249,7 +1249,7 @@ mod tests {
 
     #[test]
     fn backside_cannot_be_its_own_front() {
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         let pane = PaneId::alloc();
         assert!(state
             .observe_front_state(
@@ -1264,7 +1264,7 @@ mod tests {
 
     #[test]
     fn backend_death_marks_startup_failed_and_can_restart() {
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         let front = PaneId::alloc();
         let back = PaneId::alloc();
         start_generation(&mut state, front, back);
@@ -1278,7 +1278,7 @@ mod tests {
 
     #[test]
     fn removing_front_cancels_its_queued_work() {
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         let front = PaneId::alloc();
         let back = PaneId::alloc();
         start_generation(&mut state, front, back);
@@ -1322,7 +1322,7 @@ mod tests {
                 identity: [10; 32],
             },
         };
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         state.fronts.insert(
             front,
             FrontDelivery {
@@ -1344,7 +1344,7 @@ mod tests {
             },
         );
 
-        let mut restored = ReviewDeliveryState::restore(state.persisted());
+        let mut restored = ShitsujiDeliveryState::restore(state.persisted());
         assert_eq!(
             restored.fronts[&front]
                 .acknowledged_checkpoint
@@ -1366,7 +1366,7 @@ mod tests {
     fn restored_binding_reissues_provider_specific_resolution() {
         let front = PaneId::alloc();
         let back = PaneId::alloc();
-        let mut state = ReviewDeliveryState::default();
+        let mut state = ShitsujiDeliveryState::default();
         state.fronts.insert(
             front,
             FrontDelivery {
@@ -1382,7 +1382,7 @@ mod tests {
             },
         );
 
-        let mut restored = ReviewDeliveryState::restore(state.persisted());
+        let mut restored = ShitsujiDeliveryState::restore(state.persisted());
         let actions = restored.resume_actions();
         assert!(actions.iter().any(|action| matches!(
             action,
@@ -1407,7 +1407,7 @@ mod tests {
         ] {
             let front = PaneId::alloc();
             let back = PaneId::alloc();
-            let mut state = ReviewDeliveryState::default();
+            let mut state = ShitsujiDeliveryState::default();
             state.fronts.insert(
                 front,
                 FrontDelivery {
@@ -1420,7 +1420,7 @@ mod tests {
                 },
             );
 
-            let mut restored = ReviewDeliveryState::restore(state.persisted());
+            let mut restored = ShitsujiDeliveryState::restore(state.persisted());
             let actions = restored.resume_actions();
             assert!(actions.iter().any(|action| matches!(
                 action,

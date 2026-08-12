@@ -41,7 +41,7 @@ macro_rules! string_id {
     };
 }
 
-string_id!(ReviewBackendProfileId);
+string_id!(ShitsujiBackendProfileId);
 string_id!(RuleTargetId);
 string_id!(RuleProposalId);
 
@@ -64,7 +64,7 @@ pub enum RuleProposalDecision {
 pub struct RuleProposal {
     pub proposal_id: RuleProposalId,
     pub rule_text: String,
-    pub target_profile_id: ReviewBackendProfileId,
+    pub target_profile_id: ShitsujiBackendProfileId,
     pub fingerprint: String,
     pub source_event_ids: Vec<String>,
     pub status: RuleProposalStatus,
@@ -75,14 +75,14 @@ pub struct RuleProposal {
 pub struct ActiveRule {
     pub proposal_id: RuleProposalId,
     pub rule_text: String,
-    pub target_profile_id: ReviewBackendProfileId,
+    pub target_profile_id: ShitsujiBackendProfileId,
     pub fingerprint: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RuleProposalSubmitInput {
     pub rule_text: String,
-    pub target_profile_id: ReviewBackendProfileId,
+    pub target_profile_id: ShitsujiBackendProfileId,
     pub fingerprint: String,
     pub source_event_id: String,
 }

@@ -721,12 +721,12 @@ impl HeadlessServer {
             crate::render_prof::event("full_render_cause.config_reload");
         }
 
-        if let Some(request) = self.app.state.request_review_proposal_decision.take() {
-            if let Err(err) = self.app.decide_review_rule_proposal(request) {
-                error!(err = %err, "failed to apply review rule proposal decision");
+        if let Some(request) = self.app.state.request_shitsuji_proposal_decision.take() {
+            if let Err(err) = self.app.decide_shitsuji_rule_proposal(request) {
+                error!(err = %err, "failed to apply shitsuji rule proposal decision");
             }
             needs_render = true;
-            crate::render_prof::event("full_render_cause.review_proposal_decision");
+            crate::render_prof::event("full_render_cause.shitsuji_proposal_decision");
         }
 
         needs_render
@@ -3640,10 +3640,10 @@ impl HeadlessServer {
     fn handle_scheduled_tasks_headless(&mut self, now: Instant, geometry_dirty: bool) -> bool {
         let mut changed = false;
 
-        self.app.submit_due_review_prompts(now);
-        self.app.retry_pending_review_actions();
-        self.app.retry_failed_review_backends(now);
-        self.app.reconcile_review_backend_readiness(now);
+        self.app.submit_due_shitsuji_prompts(now);
+        self.app.retry_pending_shitsuji_actions();
+        self.app.retry_failed_shitsuji_backends(now);
+        self.app.reconcile_shitsuji_backend_readiness(now);
 
         self.app.sync_headless_animation_timer(now);
 
@@ -5561,14 +5561,14 @@ next_tab = ""
     }
 
     #[tokio::test]
-    async fn headless_scheduled_tasks_submit_review_prompt_after_deadline() {
+    async fn headless_scheduled_tasks_submit_shitsuji_prompt_after_deadline() {
         let mut server = test_headless_server();
-        server.app.review_agent_config.enabled = true;
-        server.app.review_agent_config.backend_profile_id = "review-profile".into();
-        server.app.review_agent_config.backend_argv = vec!["review-agent".into()];
-        server.app.review_agent_config.readiness_attempts = 2;
-        server.app.review_agent_config.readiness_interval_ms = 10;
-        let workspace = crate::workspace::Workspace::test_new("review-submit");
+        server.app.shitsuji_agent_config.enabled = true;
+        server.app.shitsuji_agent_config.backend_profile_id = "shitsuji-profile".into();
+        server.app.shitsuji_agent_config.backend_argv = vec!["shitsuji-agent".into()];
+        server.app.shitsuji_agent_config.readiness_attempts = 2;
+        server.app.shitsuji_agent_config.readiness_interval_ms = 10;
+        let workspace = crate::workspace::Workspace::test_new("shitsuji-submit");
         let front_id = workspace.tabs[0].root_pane;
         let backside = &workspace.tabs[0].backsides[&front_id];
         let back_id = backside.pane_id;
@@ -5593,10 +5593,10 @@ next_tab = ""
             .terminal_runtimes
             .insert(terminal_id.clone(), runtime);
         let sent_at = Instant::now();
-        let pending = crate::app::ReviewBackendPendingSubmit::new("assignment".into(), sent_at);
+        let pending = crate::app::ShitsujiBackendPendingSubmit::new("assignment".into(), sent_at);
         server
             .app
-            .review_backend_pending_submits
+            .shitsuji_backend_pending_submits
             .insert(back_id, pending);
 
         server.handle_scheduled_tasks_headless(sent_at, false);
@@ -5618,7 +5618,7 @@ next_tab = ""
         assert_eq!(input_rx.try_recv().unwrap(), Bytes::from_static(b"\r"));
         assert!(!server
             .app
-            .review_backend_pending_submits
+            .shitsuji_backend_pending_submits
             .contains_key(&back_id));
 
         if let Some(runtime) = server.app.terminal_runtimes.remove(&terminal_id) {

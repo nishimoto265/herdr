@@ -8,8 +8,8 @@ mod layouts;
 mod panes;
 pub(crate) mod plugins;
 mod responses;
-mod review_agent;
 mod session;
+mod shitsuji_agent;
 mod tabs;
 mod workspaces;
 mod worktrees;
@@ -59,11 +59,11 @@ impl App {
     }
 
     pub(crate) fn handle_internal_event(&mut self, ev: AppEvent) {
-        if self.handle_review_background_event(&ev) {
+        if self.handle_shitsuji_background_event(&ev) {
             return;
         }
         if let AppEvent::PaneDied { pane_id } = &ev {
-            if self.handle_review_pane_died(*pane_id) {
+            if self.handle_shitsuji_pane_died(*pane_id) {
                 return;
             }
         }
@@ -1058,11 +1058,11 @@ impl App {
             Method::PluginPaneClose(params) => {
                 return self.handle_plugin_pane_close(request.id, params);
             }
-            Method::ReviewRuleProposalSubmit(params) => {
-                return self.handle_review_rule_proposal_submit(request.id, params);
+            Method::ShitsujiRuleProposalSubmit(params) => {
+                return self.handle_shitsuji_rule_proposal_submit(request.id, params);
             }
-            Method::ReviewRuleProposalList(params) => {
-                return self.handle_review_rule_proposal_list(request.id, params);
+            Method::ShitsujiRuleProposalList(params) => {
+                return self.handle_shitsuji_rule_proposal_list(request.id, params);
             }
             _ => {
                 return responses::encode_error(
