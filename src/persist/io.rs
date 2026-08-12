@@ -104,7 +104,9 @@ pub(super) fn save_replace_json_with_backup_to_path<T: serde::Serialize + ?Sized
         let json = serde_json::to_string_pretty(value)?;
         let tmp_path = path.with_extension("json.tmp");
         std::fs::write(&tmp_path, &json)?;
-        replace_file_with_backup_using(path, &tmp_path, std::fs::rename)
+        // A closure, not `std::fs::rename` itself: the generic `AsRef<Path>` parameters infer
+        // to one fixed lifetime, which does not satisfy the higher-ranked `FnMut(&Path, &Path)`.
+        replace_file_with_backup_using(path, &tmp_path, |from, to| std::fs::rename(from, to))
     }
 }
 
