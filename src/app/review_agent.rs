@@ -78,6 +78,8 @@ impl ReviewBackendPendingSubmit {
 }
 
 impl App {
+    // Handoff restore is Unix-only, so the Windows build has no caller.
+    #[cfg(any(unix, test))]
     pub(crate) fn install_handoff_review_state(
         &mut self,
         review_agent: crate::review_agent::ReviewAgentState,
