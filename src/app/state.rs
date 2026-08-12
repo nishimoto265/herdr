@@ -810,9 +810,24 @@ impl ReviewPanelState {
 
     #[allow(dead_code)] // Runtime projection calls this once server proposal events are connected.
     pub fn replace_proposals(&mut self, proposals: Vec<RuleProposalView>) {
+        let selected_proposal_id = self
+            .proposals
+            .get(self.selected)
+            .map(|proposal| proposal.proposal_id.as_str());
+        let selected = selected_proposal_id
+            .and_then(|proposal_id| {
+                proposals
+                    .iter()
+                    .position(|proposal| proposal.proposal_id == proposal_id)
+            })
+            .unwrap_or_else(|| self.selected.min(proposals.len().saturating_sub(1)));
+        let selection_changed = selected_proposal_id
+            != proposals
+                .get(selected)
+                .map(|proposal| proposal.proposal_id.as_str());
         self.proposals = proposals;
-        self.selected = self.selected.min(self.proposals.len().saturating_sub(1));
-        if self.proposals.is_empty() {
+        self.selected = selected;
+        if self.proposals.is_empty() || selection_changed {
             self.scroll = 0;
         }
     }
@@ -868,7 +883,7 @@ pub struct ViewState {
     pub new_tab_hit_area: Rect,
     pub terminal_area: Rect,
     pub review_panel_rect: Rect,
-    pub review_panel_rail_rect: Rect,
+    pub review_panel_handle_rect: Rect,
     pub review_panel_overlay: bool,
     pub review_panel_hit_areas: ReviewPanelHitAreas,
     pub mobile_header_rect: Rect,
@@ -881,7 +896,7 @@ pub struct ViewState {
 
 impl ViewState {
     pub(crate) fn terminal_content_overlay_rects(&self) -> Vec<Rect> {
-        let mut rects = vec![self.review_panel_rail_rect];
+        let mut rects = vec![self.review_panel_handle_rect];
         if self.review_panel_overlay {
             rects.push(self.review_panel_rect);
         }
@@ -1919,7 +1934,7 @@ impl AppState {
                 new_tab_hit_area: Rect::default(),
                 terminal_area: Rect::default(),
                 review_panel_rect: Rect::default(),
-                review_panel_rail_rect: Rect::default(),
+                review_panel_handle_rect: Rect::default(),
                 review_panel_overlay: false,
                 review_panel_hit_areas: ReviewPanelHitAreas::default(),
                 mobile_header_rect: Rect::default(),

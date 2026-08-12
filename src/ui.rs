@@ -34,7 +34,7 @@ use self::menus::{
 use self::mobile::{
     compute_mobile_header_hit_areas, is_mobile_width, mobile_switcher_max_scroll_for_height,
     mobile_toast_banner_rect, render_mobile_header, render_mobile_panel,
-    render_mobile_toast_banner,
+    render_mobile_toast_banner, MIN_MOBILE_HEADER_CONTENT_WIDTH,
 };
 use self::navigator::render_navigator_overlay;
 pub(crate) use self::onboarding::onboarding_welcome_continue_rect;
@@ -51,7 +51,7 @@ use self::release_notes::{render_product_announcement_overlay, render_release_no
 use self::review_agent::render_review_panel;
 pub(crate) use self::review_agent::{
     compute_review_panel_hit_areas, compute_review_panel_layout, max_review_panel_scroll,
-    review_panel_page_height, selected_review_card_scroll,
+    review_panel_handle_slot, review_panel_page_height,
 };
 pub(crate) use self::scrollbar::{
     pane_scrollbar_rect, release_notes_scrollbar_rect, scrollbar_offset_from_drag_row,
@@ -93,7 +93,7 @@ pub(crate) use self::{
         mobile_switcher_workspace_doc_range, MobileSwitcherTarget,
     },
     panes::{apply_pane_chrome, pane_inner_rect, pane_is_scrolled_back},
-    tabs::compute_tab_bar_view,
+    tabs::{compute_tab_bar_view, MIN_TAB_BAR_CONTENT_WIDTH},
     widgets::{centered_popup_rect, modal_stack_areas},
 };
 use crate::app::state::ViewLayout;
@@ -262,6 +262,12 @@ fn compute_view_internal(
         compute_workspace_card_areas(app, sidebar_area)
     };
 
+    let handle_slot = review_panel_handle_slot(
+        &app.review_panel,
+        tab_bar_rect,
+        MIN_TAB_BAR_CONTENT_WIDTH,
+        terminal_area,
+    );
     let tab_bar_view = app
         .active
         .and_then(|ws_idx| app.workspaces.get(ws_idx))
@@ -272,6 +278,7 @@ fn compute_view_internal(
                 app.tab_scroll,
                 app.tab_scroll_follow_active,
                 app.mouse_capture,
+                handle_slot.reserved_width,
             )
         })
         .unwrap_or_default();
@@ -307,7 +314,7 @@ fn compute_view_internal(
     let review_panel_hit_areas =
         compute_review_panel_hit_areas(&app.review_panel, review_layout.panel_rect);
     let pane_backside_toggle_areas =
-        compute_pane_backside_toggle_areas(app, &pane_infos, review_layout.rail_rect);
+        compute_pane_backside_toggle_areas(app, &pane_infos, handle_slot.rect);
 
     let toast_hit_area = app
         .toast
@@ -333,7 +340,7 @@ fn compute_view_internal(
         new_tab_hit_area: tab_bar_view.new_tab_hit_area,
         terminal_area,
         review_panel_rect: review_layout.panel_rect,
-        review_panel_rail_rect: review_layout.rail_rect,
+        review_panel_handle_rect: handle_slot.rect,
         review_panel_overlay: review_layout.overlay,
         review_panel_hit_areas,
         mobile_header_rect: Rect::default(),
@@ -390,7 +397,13 @@ fn compute_mobile_view(
     if resize_panes {
         resize_background_tab_panes_to_area(app, terminal_runtimes, terminal_area, cell_size);
     }
-    let header_hits = compute_mobile_header_hit_areas(app, header_rect);
+    let handle_slot = review_panel_handle_slot(
+        &app.review_panel,
+        header_rect,
+        MIN_MOBILE_HEADER_CONTENT_WIDTH,
+        terminal_area,
+    );
+    let header_hits = compute_mobile_header_hit_areas(app, header_rect, handle_slot.reserved_width);
     let review_layout =
         compute_review_panel_layout(terminal_area, app.review_panel.is_expanded(), true);
     app.review_panel.scroll = app.review_panel.scroll.min(max_review_panel_scroll(
@@ -400,7 +413,7 @@ fn compute_mobile_view(
     let review_panel_hit_areas =
         compute_review_panel_hit_areas(&app.review_panel, review_layout.panel_rect);
     let pane_backside_toggle_areas =
-        compute_pane_backside_toggle_areas(app, &pane_infos, review_layout.rail_rect);
+        compute_pane_backside_toggle_areas(app, &pane_infos, handle_slot.rect);
 
     let toast_hit_area = app
         .toast
@@ -419,7 +432,7 @@ fn compute_mobile_view(
         new_tab_hit_area: Rect::default(),
         terminal_area,
         review_panel_rect: review_layout.panel_rect,
-        review_panel_rail_rect: review_layout.rail_rect,
+        review_panel_handle_rect: handle_slot.rect,
         review_panel_overlay: review_layout.overlay,
         review_panel_hit_areas,
         mobile_header_rect: header_rect,
@@ -721,10 +734,141 @@ mod tests {
         assert_eq!(app.view.mobile_header_rect, Rect::new(0, 0, 44, 2));
         assert_eq!(app.view.terminal_area, Rect::new(0, 2, 44, 18));
         assert_eq!(app.view.mobile_menu_hit_area.height, 2);
+        // The collapsed review handle owns the right end of the header, so the switch button sits
+        // just left of it.
+        let handle = app.view.review_panel_handle_rect;
+        assert_eq!(handle.x + handle.width, 44);
         assert_eq!(
             app.view.mobile_menu_hit_area.x + app.view.mobile_menu_hit_area.width,
-            44
+            handle.x
         );
+    }
+
+    /// The review handle and the pane backside controls are projected by different modules onto
+    /// the same frame, so these pin the seams between them.
+    fn app_with_collapsed_handle_and_backside(area: Rect) -> crate::app::state::AppState {
+        let mut app = crate::app::state::AppState::test_new();
+        app.mode = Mode::Terminal;
+        let mut ws = Workspace::test_new("one");
+        let pane_id = ws.tabs[0].root_pane;
+        assert!(ws.toggle_backside(pane_id));
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        app.selected = 0;
+        app.review_panel
+            .replace_proposals(vec![crate::app::state::RuleProposalView {
+                proposal_id: "proposal-1".to_string(),
+                rule_text: "Always verify the focused pane.".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 1,
+            }]);
+        app.review_panel.close_manually();
+        compute_view(&mut app, area);
+        app
+    }
+
+    #[test]
+    fn the_collapsed_handle_never_overlaps_a_pane_backside_control() {
+        for area in [
+            Rect::new(0, 0, 90, 20),
+            Rect::new(0, 0, 70, 12),
+            Rect::new(0, 0, 44, 20),
+        ] {
+            let app = app_with_collapsed_handle_and_backside(area);
+            let handle = app.view.review_panel_handle_rect;
+            assert!(handle.width > 0, "{area:?} produced no handle");
+            assert!(
+                !app.view.pane_backside_toggle_areas.is_empty(),
+                "{area:?} produced no backside control"
+            );
+            for toggle in &app.view.pane_backside_toggle_areas {
+                assert!(
+                    !handle.intersects(toggle.rect),
+                    "{area:?}: handle {handle:?} covers control {:?}",
+                    toggle.rect
+                );
+                if toggle.face_rect.width > 0 {
+                    assert!(
+                        !handle.intersects(toggle.face_rect),
+                        "{area:?}: handle {handle:?} covers face name {:?}",
+                        toggle.face_rect
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_borderless_slot_keeps_its_face_name_clear_of_the_handle_fallback() {
+        // With the tab bar hidden the handle drops onto the terminal's top row, which is also the
+        // top pane's control row — the one case where the two really compete for cells.
+        let area = Rect::new(0, 0, 90, 20);
+        let mut app = crate::app::state::AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.hide_tab_bar_when_single_tab = true;
+        app.pane_borders = false;
+        let mut ws = Workspace::test_new("one");
+        let pane_id = ws.tabs[0].root_pane;
+        assert!(ws.toggle_backside(pane_id));
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        app.selected = 0;
+        app.review_panel
+            .replace_proposals(vec![crate::app::state::RuleProposalView {
+                proposal_id: "proposal-1".to_string(),
+                rule_text: "Always verify the focused pane.".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 1,
+            }]);
+        app.review_panel.close_manually();
+        compute_view(&mut app, area);
+
+        let handle = app.view.review_panel_handle_rect;
+        assert_eq!(app.view.tab_bar_rect, Rect::default());
+        assert_eq!(handle.y, app.view.terminal_area.y);
+        let toggle = app
+            .view
+            .pane_backside_toggle_areas
+            .first()
+            .expect("backside control");
+        assert_eq!(handle.y, toggle.rect.y, "the fallback shares the pane row");
+        assert!(!handle.intersects(toggle.rect));
+        assert!(!handle.intersects(toggle.face_rect));
+        assert_eq!(
+            toggle.rect.x + toggle.rect.width,
+            handle.x,
+            "the control gives way to the handle instead of being covered"
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal.draw(|frame| render(&app, frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = (handle.x..handle.x + handle.width)
+            .map(|x| buffer[(x, handle.y)].symbol())
+            .collect::<String>();
+        assert!(row.contains("[‹ Rules 1]"), "handle was overdrawn: {row:?}");
+    }
+
+    #[test]
+    fn retained_overlay_rects_cover_both_the_handle_and_the_backside_controls() {
+        let area = Rect::new(0, 0, 90, 20);
+        let app = app_with_collapsed_handle_and_backside(area);
+        let overlays = app.view.terminal_content_overlay_rects();
+        let handle = app.view.review_panel_handle_rect;
+
+        assert!(
+            overlays.contains(&handle),
+            "retained frames would patch over the handle"
+        );
+        for toggle in &app.view.pane_backside_toggle_areas {
+            assert!(
+                overlays.contains(&toggle.rect),
+                "retained frames would patch over a backside control"
+            );
+        }
+        assert!(overlays
+            .iter()
+            .all(|rect| rect.width > 0 && rect.height > 0));
     }
 
     #[test]

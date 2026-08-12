@@ -400,10 +400,7 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.state.review_panel.selected =
                     self.state.review_panel.selected.saturating_sub(1);
-                self.state.review_panel.scroll = crate::ui::selected_review_card_scroll(
-                    &self.state.review_panel,
-                    self.state.view.review_panel_rect,
-                );
+                self.state.review_panel.scroll = 0;
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.state.review_panel.selected = self
@@ -412,10 +409,7 @@ impl App {
                     .selected
                     .saturating_add(1)
                     .min(self.state.review_panel.proposals.len().saturating_sub(1));
-                self.state.review_panel.scroll = crate::ui::selected_review_card_scroll(
-                    &self.state.review_panel,
-                    self.state.view.review_panel_rect,
-                );
+                self.state.review_panel.scroll = 0;
             }
             KeyCode::PageUp => {
                 self.state.review_panel.scroll = self.state.review_panel.scroll.saturating_sub(
@@ -423,9 +417,17 @@ impl App {
                 );
             }
             KeyCode::PageDown => {
-                self.state.review_panel.scroll = self.state.review_panel.scroll.saturating_add(
-                    crate::ui::review_panel_page_height(self.state.view.review_panel_rect),
-                );
+                self.state.review_panel.scroll = self
+                    .state
+                    .review_panel
+                    .scroll
+                    .saturating_add(crate::ui::review_panel_page_height(
+                        self.state.view.review_panel_rect,
+                    ))
+                    .min(crate::ui::max_review_panel_scroll(
+                        &self.state.review_panel,
+                        self.state.view.review_panel_rect,
+                    ));
             }
             KeyCode::Char(key @ ('a' | 'r'))
                 if self.state.request_review_proposal_decision.is_none() =>
@@ -812,6 +814,158 @@ mod tests {
             app.state.review_panel.visibility,
             crate::app::state::ReviewPanelVisibility::ManuallyOpen
         );
+    }
+
+    #[test]
+    fn focused_review_panel_navigation_keeps_decision_on_selected_proposal() {
+        let mut app = test_app();
+        app.state.review_panel.replace_proposals(vec![
+            crate::app::state::RuleProposalView {
+                proposal_id: "first".to_string(),
+                rule_text: "First rule".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 2,
+            },
+            crate::app::state::RuleProposalView {
+                proposal_id: "second".to_string(),
+                rule_text: "Second rule".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 5,
+            },
+        ]);
+        app.state.review_panel.open_manually();
+        app.state.review_panel.scroll = 3;
+        app.state.view.review_panel_rect = ratatui::layout::Rect::new(0, 0, 40, 20);
+
+        assert!(
+            app.handle_review_panel_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()))
+        );
+        assert_eq!(app.state.review_panel.selected, 1);
+        assert_eq!(app.state.review_panel.scroll, 0);
+
+        assert!(
+            app.handle_review_panel_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::empty()))
+        );
+        let request = app
+            .state
+            .request_review_proposal_decision
+            .as_ref()
+            .expect("immediate reject request");
+        assert_eq!(request.proposal_id.as_str(), "second");
+        assert_eq!(request.expected_revision, 5);
+        assert_eq!(
+            request.decision,
+            crate::review_agent::RuleProposalDecision::Reject
+        );
+    }
+
+    #[test]
+    fn focused_review_panel_keyboard_decisions_are_immediate() {
+        for (key, expected) in [
+            ('r', crate::review_agent::RuleProposalDecision::Reject),
+            ('a', crate::review_agent::RuleProposalDecision::Approve),
+        ] {
+            let mut app = test_app();
+            app.state
+                .review_panel
+                .replace_proposals(vec![crate::app::state::RuleProposalView {
+                    proposal_id: "selected".to_string(),
+                    rule_text: "Selected rule".to_string(),
+                    target_profile_id: "review-agent".to_string(),
+                    revision: 8,
+                }]);
+            app.state.review_panel.open_manually();
+
+            assert!(app
+                .handle_review_panel_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::empty())));
+            let request = app
+                .state
+                .request_review_proposal_decision
+                .as_ref()
+                .expect("immediate decision request");
+            assert_eq!(request.proposal_id.as_str(), "selected");
+            assert_eq!(request.expected_revision, 8);
+            assert_eq!(request.decision, expected);
+        }
+    }
+
+    #[test]
+    fn focused_review_panel_navigation_clamps_at_proposal_boundaries() {
+        let mut app = test_app();
+        app.state.review_panel.replace_proposals(vec![
+            crate::app::state::RuleProposalView {
+                proposal_id: "first".to_string(),
+                rule_text: "First rule".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 1,
+            },
+            crate::app::state::RuleProposalView {
+                proposal_id: "second".to_string(),
+                rule_text: "Second rule".to_string(),
+                target_profile_id: "review-agent".to_string(),
+                revision: 1,
+            },
+        ]);
+        app.state.review_panel.open_manually();
+
+        for code in [KeyCode::Up, KeyCode::Char('k')] {
+            assert!(app.handle_review_panel_key(KeyEvent::new(code, KeyModifiers::empty())));
+            assert_eq!(app.state.review_panel.selected, 0);
+        }
+        assert!(app.handle_review_panel_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty())));
+        assert_eq!(app.state.review_panel.selected, 1);
+        for code in [KeyCode::Down, KeyCode::Char('j')] {
+            assert!(app.handle_review_panel_key(KeyEvent::new(code, KeyModifiers::empty())));
+            assert_eq!(app.state.review_panel.selected, 1);
+        }
+        assert!(
+            app.handle_review_panel_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty()))
+        );
+        assert_eq!(app.state.review_panel.selected, 0);
+    }
+
+    #[test]
+    fn focused_review_panel_escape_and_q_collapse_immediately() {
+        let mut app = test_app();
+        for code in [KeyCode::Esc, KeyCode::Char('q')] {
+            app.state.review_panel.open_manually();
+            assert!(app.handle_review_panel_key(KeyEvent::new(code, KeyModifiers::empty())));
+            assert!(!app.state.review_panel.is_expanded());
+            assert!(!app.state.review_panel.keyboard_focused);
+        }
+    }
+
+    #[test]
+    fn focused_review_panel_page_scroll_clamps_to_selected_rule() {
+        let mut app = test_app();
+        app.state
+            .review_panel
+            .replace_proposals(vec![crate::app::state::RuleProposalView {
+                proposal_id: "long".to_string(),
+                rule_text: "A long proposed rule that wraps across the review drawer. ".repeat(30),
+                target_profile_id: "review-agent".to_string(),
+                revision: 1,
+            }]);
+        app.state.review_panel.open_manually();
+        app.state.view.review_panel_rect = ratatui::layout::Rect::new(0, 0, 36, 20);
+        let max_scroll = crate::ui::max_review_panel_scroll(
+            &app.state.review_panel,
+            app.state.view.review_panel_rect,
+        );
+        assert!(max_scroll > 0);
+
+        for _ in 0..20 {
+            assert!(app
+                .handle_review_panel_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::empty())));
+        }
+        assert_eq!(app.state.review_panel.scroll, max_scroll);
+
+        for _ in 0..20 {
+            assert!(
+                app.handle_review_panel_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::empty()))
+            );
+        }
+        assert_eq!(app.state.review_panel.scroll, 0);
     }
 
     #[tokio::test]

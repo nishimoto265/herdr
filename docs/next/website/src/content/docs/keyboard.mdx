@@ -109,9 +109,9 @@ Backsides are intentionally excluded from the normal agent list, workspace statu
 
 ## Review rule proposals
 
-When the Review Agent has pending rule proposals, Herdr opens a collapsible panel on the right. Click the right-side rail to open it manually. The panel folds automatically after the last pending proposal is approved or rejected, and you can close it manually at any time.
+When the Review Agent has pending rule proposals, Herdr opens a collapsible panel on the right. While it is collapsed, a `[‹ Rules N]` handle sits at the right end of the tab bar, where `N` is the pending proposal count; click it to open the panel manually. The handle is highlighted while proposals are waiting and stays readable as `[‹ Rules]` when none are. If the tab bar is hidden — a single tab with `hide_tab_bar_when_single_tab` enabled — or too narrow to spare the room without dropping a tab label, the handle falls back to the top-right corner of the terminal area instead. The panel folds automatically after the last pending proposal is approved or rejected, and you can close it manually at any time with the `[›]` control in its top-right corner.
 
-With the review panel focused, use `up`/`k` and `down`/`j` to select a proposal, `pageup` and `pagedown` to scroll, `a` to approve, `r` to reject, and `esc` or `q` to close the panel. The supported CLI intentionally has no approve or reject command.
+The panel shows one proposal at a time, with its position as `current / total`. With the review panel focused, use `up`/`k` and `down`/`j` to select a proposal, `pageup` and `pagedown` to scroll the selected rule text, `a` to approve, `r` to reject, and `esc` or `q` to close the panel. The supported CLI intentionally has no approve or reject command.
 
 A few `ctrl+alt` chords are taken elsewhere. Avoid these:
 

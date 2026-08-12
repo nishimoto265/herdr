@@ -10,6 +10,10 @@ use super::widgets::panel_contrast_fg;
 use crate::app::AppState;
 
 const MIN_TAB_WIDTH: u16 = 8;
+/// Left scroll button, one tab, right scroll button, and the new-tab button. Below this the tab bar
+/// cannot show a single tab label, so it must not give columns away.
+pub(crate) const MIN_TAB_BAR_CONTENT_WIDTH: u16 =
+    TAB_SCROLL_BUTTON_WIDTH + MIN_TAB_WIDTH + TAB_SCROLL_BUTTON_WIDTH + NEW_TAB_WIDTH;
 const NEW_TAB_WIDTH: u16 = 3;
 const TAB_SCROLL_BUTTON_WIDTH: u16 = 3;
 
@@ -107,13 +111,19 @@ fn max_tab_scroll(ws: &crate::workspace::Workspace, area: Rect) -> usize {
         .unwrap_or(0)
 }
 
+/// `reserved_trailing_width` is the columns at the right of the row that another widget owns.
 pub(crate) fn compute_tab_bar_view(
     ws: &crate::workspace::Workspace,
     area: Rect,
     current_scroll: usize,
     follow_active: bool,
     mouse_chrome: bool,
+    reserved_trailing_width: u16,
 ) -> TabBarView {
+    let area = Rect {
+        width: area.width.saturating_sub(reserved_trailing_width),
+        ..area
+    };
     if area.width == 0 || area.height == 0 {
         return TabBarView::default();
     }
@@ -162,8 +172,8 @@ pub(crate) fn compute_tab_bar_view(
 
     let left_hit_area = Rect::new(area.x, area.y, TAB_SCROLL_BUTTON_WIDTH.min(area.width), 1);
     let tab_area_x = left_hit_area.x + left_hit_area.width;
-    let reserved_trailing_width = NEW_TAB_WIDTH.saturating_add(TAB_SCROLL_BUTTON_WIDTH);
-    let tab_area_right = area_right.saturating_sub(reserved_trailing_width);
+    let tab_controls_trailing_width = NEW_TAB_WIDTH.saturating_add(TAB_SCROLL_BUTTON_WIDTH);
+    let tab_area_right = area_right.saturating_sub(tab_controls_trailing_width);
     let tab_area = Rect::new(
         tab_area_x,
         area.y,
@@ -202,6 +212,19 @@ pub(crate) fn compute_tab_bar_view(
         scroll_right_hit_area: right_hit_area,
         new_tab_hit_area,
     }
+}
+
+/// Width of the strip at the right of `area` that another widget already claimed, matching the
+/// reservation `compute_tab_bar_view` was given for the same row.
+fn trailing_width_owned_by_others(app: &AppState, area: Rect) -> u16 {
+    let claimed = app.view.review_panel_handle_rect;
+    if claimed.width == 0 || claimed.y != area.y {
+        return 0;
+    }
+    area.x
+        .saturating_add(area.width)
+        .saturating_sub(claimed.x)
+        .min(area.width)
 }
 
 fn tab_drop_indicator_x(
@@ -263,6 +286,15 @@ pub(super) fn render_tab_bar(app: &AppState, frame: &mut Frame, area: Rect) {
         Paragraph::new(" ".repeat(area.width as usize)).style(Style::default().bg(p.panel_bg)),
         area,
     );
+
+    // The row background covers the whole strip, but everything positioned from its right edge has
+    // to stop where the columns handed to another widget begin.
+    let area = Rect {
+        width: area
+            .width
+            .saturating_sub(trailing_width_owned_by_others(app, area)),
+        ..area
+    };
 
     let first_visible_idx = app
         .view
@@ -409,6 +441,59 @@ mod tests {
     }
 
     #[test]
+    fn reserved_trailing_columns_stay_clear_of_every_tab_control() {
+        for (width, tab_count) in [(60u16, 2usize), (60, 12)] {
+            let mut app = AppState::test_new();
+            let mut ws = crate::workspace::Workspace::test_new("one");
+            for idx in 1..tab_count {
+                ws.test_add_tab(Some(&format!("tab-{idx}")));
+            }
+            app.workspaces = vec![ws];
+            app.active = Some(0);
+            app.view.tab_bar_rect = Rect::new(0, 0, width, 1);
+
+            let reserved = 13u16;
+            let view = compute_tab_bar_view(
+                &app.workspaces[0],
+                app.view.tab_bar_rect,
+                0,
+                true,
+                true,
+                reserved,
+            );
+            let limit = app.view.tab_bar_rect.x + width - reserved;
+            for rect in view
+                .tab_hit_areas
+                .iter()
+                .chain([
+                    &view.scroll_left_hit_area,
+                    &view.scroll_right_hit_area,
+                    &view.new_tab_hit_area,
+                ])
+                .filter(|rect| rect.width > 0)
+            {
+                assert!(
+                    rect.x + rect.width <= limit,
+                    "{tab_count} tabs: {rect:?} crossed the reserved columns at {limit}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_reservation_wider_than_the_row_yields_no_tab_controls() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![crate::workspace::Workspace::test_new("one")];
+        app.active = Some(0);
+        let area = Rect::new(0, 0, 10, 1);
+
+        let view = compute_tab_bar_view(&app.workspaces[0], area, 0, true, true, 13);
+        assert!(view.tab_hit_areas.iter().all(|rect| rect.width == 0));
+        assert_eq!(view.new_tab_hit_area, Rect::default());
+        assert_eq!(view.scroll_right_hit_area, Rect::default());
+    }
+
+    #[test]
     fn tab_bar_marks_zoomed_tabs_without_renaming_them() {
         let mut app = AppState::test_new();
         let mut ws = Workspace::test_new("test");
@@ -419,7 +504,8 @@ mod tests {
         app.workspaces = vec![ws];
         app.active = Some(0);
         app.view.tab_bar_rect = Rect::new(0, 0, 30, 1);
-        let view = compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false);
+        let view =
+            compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false, 0);
         app.view.tab_hit_areas = view.tab_hit_areas;
 
         let backend = TestBackend::new(30, 1);
@@ -446,7 +532,8 @@ mod tests {
         app.workspaces = vec![ws];
         app.active = Some(0);
         app.view.tab_bar_rect = Rect::new(0, 0, 30, 1);
-        let view = compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false);
+        let view =
+            compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false, 0);
         app.view.tab_hit_areas = view.tab_hit_areas;
 
         let backend = TestBackend::new(30, 1);
@@ -492,7 +579,8 @@ mod tests {
         app.active = Some(0);
         app.workspaces = vec![ws];
         app.view.tab_bar_rect = Rect::new(0, 0, 30, 1);
-        let view = compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false);
+        let view =
+            compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false, 0);
         app.view.tab_hit_areas = view.tab_hit_areas;
 
         let backend = TestBackend::new(30, 1);
