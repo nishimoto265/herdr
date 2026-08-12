@@ -51,7 +51,7 @@ pub(crate) enum ActionContext {
 }
 
 impl App {
-    fn toggle_focused_backside(&mut self) -> bool {
+    pub(super) fn toggle_focused_backside(&mut self) -> bool {
         let Some(ws_idx) = self.state.active else {
             return false;
         };

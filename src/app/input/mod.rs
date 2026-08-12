@@ -335,6 +335,10 @@ impl App {
                     MouseAction::FocusPane { ws_idx, pane_id } => {
                         self.focus_pane_internal_via_api(ws_idx, pane_id)
                     }
+                    MouseAction::ToggleBackside { ws_idx, pane_id } => {
+                        self.focus_pane_internal_via_api(ws_idx, pane_id);
+                        self.toggle_focused_backside();
+                    }
                     MouseAction::FocusToastTarget => self.focus_toast_target_via_api(),
                     MouseAction::MoveWorkspace {
                         source_ws_idx,
@@ -527,6 +531,15 @@ impl App {
         }
 
         if self.state.mode != Mode::Terminal {
+            self.last_pane_click = None;
+            return None;
+        }
+
+        if self
+            .state
+            .pane_backside_toggle_at(mouse.column, mouse.row)
+            .is_some()
+        {
             self.last_pane_click = None;
             return None;
         }

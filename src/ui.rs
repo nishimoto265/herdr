@@ -39,7 +39,9 @@ use self::mobile::{
 use self::navigator::render_navigator_overlay;
 pub(crate) use self::onboarding::onboarding_welcome_continue_rect;
 use self::onboarding::render_onboarding_overlay;
-use self::panes::{compute_pane_infos, render_panes, resize_tab_panes};
+use self::panes::{
+    compute_pane_backside_toggle_areas, compute_pane_infos, render_panes, resize_tab_panes,
+};
 pub(crate) use self::release_notes::{
     product_announcement_display_lines, release_notes_close_button_rect,
     release_notes_display_lines, release_notes_wrapped_line_count, PRODUCT_ANNOUNCEMENT_MODAL_SIZE,
@@ -304,6 +306,8 @@ fn compute_view_internal(
     ));
     let review_panel_hit_areas =
         compute_review_panel_hit_areas(&app.review_panel, review_layout.panel_rect);
+    let pane_backside_toggle_areas =
+        compute_pane_backside_toggle_areas(app, &pane_infos, review_layout.rail_rect);
 
     let toast_hit_area = app
         .toast
@@ -336,6 +340,7 @@ fn compute_view_internal(
         mobile_menu_hit_area: Rect::default(),
         toast_hit_area,
         pane_infos,
+        pane_backside_toggle_areas,
         split_borders,
     };
     app.sync_copy_mode_search_geometry();
@@ -394,6 +399,8 @@ fn compute_mobile_view(
     ));
     let review_panel_hit_areas =
         compute_review_panel_hit_areas(&app.review_panel, review_layout.panel_rect);
+    let pane_backside_toggle_areas =
+        compute_pane_backside_toggle_areas(app, &pane_infos, review_layout.rail_rect);
 
     let toast_hit_area = app
         .toast
@@ -419,6 +426,7 @@ fn compute_mobile_view(
         mobile_menu_hit_area: header_hits.menu,
         toast_hit_area,
         pane_infos,
+        pane_backside_toggle_areas,
         split_borders,
     };
     app.sync_copy_mode_search_geometry();
