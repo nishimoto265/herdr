@@ -325,6 +325,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut invalid_sections,
         |section| config.remote = section,
     );
+    load_live_section(
+        table,
+        "shitsuji_agent",
+        "shitsuji agent config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.shitsuji_agent = section,
+    );
 
     Ok(LoadedConfig {
         config,
@@ -732,17 +740,51 @@ delivery = "herdr"
     }
 
     #[test]
-    fn load_live_config_accepts_the_shitsuji_section() {
+    fn load_live_config_applies_the_shitsuji_section() {
         let loaded = load_live_config_from_str(
             r#"
 [shitsuji_agent]
 enabled = true
+backend_profile_id = "shitsuji-agent"
 backend_argv = ["codex"]
+readiness_attempts = 8
+readiness_interval_ms = 500
 "#,
         )
         .unwrap();
 
         assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        assert!(loaded.invalid_sections.is_empty());
+        let shitsuji = &loaded.config.shitsuji_agent;
+        assert!(shitsuji.enabled);
+        assert_eq!(shitsuji.backend_profile_id, "shitsuji-agent");
+        assert_eq!(shitsuji.backend_argv, vec!["codex".to_string()]);
+        assert_eq!(shitsuji.readiness_attempts, 8);
+        assert_eq!(shitsuji.readiness_interval_ms, 500);
+        assert!(shitsuji.runtime_enabled());
+    }
+
+    /// Live reload lists the sections it reads separately from
+    /// `KNOWN_TOP_LEVEL_CONFIG_KEYS`, so a key can be known — and therefore
+    /// warning-free — while never being read at all. A non-table value can only
+    /// be reported by the code that reads the key, which makes a diagnostic
+    /// naming that key the signal that it is wired into live reload.
+    #[test]
+    fn load_live_config_reads_every_known_top_level_config_key() {
+        assert!(!KNOWN_TOP_LEVEL_CONFIG_KEYS.is_empty());
+
+        for key in KNOWN_TOP_LEVEL_CONFIG_KEYS {
+            let loaded = load_live_config_from_str(&format!("{key} = 1\n")).unwrap();
+
+            assert!(
+                loaded
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.contains(key)),
+                "live reload never reads {key}, so edits to it are dropped without a warning: {:?}",
+                loaded.diagnostics
+            );
+        }
     }
 
     #[test]

@@ -790,6 +790,13 @@ impl ShitsujiDeliveryState {
     }
 
     #[cfg(test)]
+    pub(crate) fn assigned_front_pane_ids(&self) -> Vec<PaneId> {
+        let mut front_pane_ids = self.fronts.keys().copied().collect::<Vec<_>>();
+        front_pane_ids.sort_by_key(|front_pane_id| front_pane_id.raw());
+        front_pane_ids
+    }
+
+    #[cfg(test)]
     pub(crate) fn backend_lifecycle(&self, backside_pane_id: PaneId) -> BackendLifecycle {
         self.backends
             .get(&backside_pane_id)

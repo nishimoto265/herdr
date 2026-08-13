@@ -1842,4 +1842,159 @@ mod tests {
         ));
         assert!(app.reconcile_shitsuji_delivery_actions().is_empty());
     }
+
+    #[cfg(unix)]
+    const RUNTIME_ENABLED_SHITSUJI_CONFIG: &str = r#"[shitsuji_agent]
+enabled = true
+backend_profile_id = "shitsuji-agent"
+backend_argv = ["shitsuji-agent"]
+readiness_attempts = 20
+readiness_interval_ms = 250
+"#;
+
+    /// Redirects the reload path's disk access into a temp tree.
+    /// `XDG_CONFIG_HOME` covers `data_dir()`, which the reload clears persisted
+    /// delivery state and pane history through, and `XDG_STATE_HOME` covers the
+    /// announcements `App::new` reads. Without both, a reload test deletes the
+    /// developer's own session state.
+    #[cfg(unix)]
+    struct ReloadSandbox {
+        _env_lock: std::sync::MutexGuard<'static, ()>,
+        previous_config_home: Option<std::ffi::OsString>,
+        previous_state_home: Option<std::ffi::OsString>,
+        root: PathBuf,
+        config_path: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl ReloadSandbox {
+        fn new(name: &str) -> Self {
+            let env_lock = crate::config::test_config_env_lock().lock().unwrap();
+            let root = std::env::temp_dir().join(format!(
+                "herdr-shitsuji-reload-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("config")).unwrap();
+            std::fs::create_dir_all(root.join("state")).unwrap();
+            let previous_config_home = std::env::var_os("XDG_CONFIG_HOME");
+            let previous_state_home = std::env::var_os("XDG_STATE_HOME");
+            std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
+            std::env::set_var("XDG_STATE_HOME", root.join("state"));
+            let config_path = root.join("config.toml");
+            std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &config_path);
+            Self {
+                _env_lock: env_lock,
+                previous_config_home,
+                previous_state_home,
+                root,
+                config_path,
+            }
+        }
+
+        fn write_config(&self, contents: &str) {
+            std::fs::write(&self.config_path, contents).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ReloadSandbox {
+        fn drop(&mut self) {
+            restore_env_var("XDG_CONFIG_HOME", self.previous_config_home.take());
+            restore_env_var("XDG_STATE_HOME", self.previous_state_home.take());
+            std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[cfg(unix)]
+    fn restore_env_var(key: &str, original: Option<std::ffi::OsString>) {
+        match original {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    /// Builds the app from the same toml the sandbox serves, so a reload that
+    /// changes nothing produces an identical config and lands on the reconcile
+    /// branch instead of the config-change restart.
+    #[cfg(unix)]
+    fn app_with_persisted_shitsuji_assignment(
+        sandbox: &ReloadSandbox,
+    ) -> (App, crate::layout::PaneId) {
+        sandbox.write_config(RUNTIME_ENABLED_SHITSUJI_CONFIG);
+        let config: crate::config::Config =
+            toml::from_str(RUNTIME_ENABLED_SHITSUJI_CONFIG).unwrap();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("shitsuji-reload")];
+        app.state.ensure_test_terminals();
+        let front_id = app.state.workspaces[0].tabs[0].root_pane;
+        let backside_id = app.state.workspaces[0].tabs[0].backsides[&front_id].pane_id;
+        app.shitsuji_delivery
+            .ensure_assignment(front_id, backside_id);
+        crate::persist::shitsuji_delivery::save(&app.shitsuji_delivery).unwrap();
+        (app, front_id)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shitsuji_delivery_survives_a_reload_that_keeps_the_runtime_enabled() {
+        let sandbox = ReloadSandbox::new("keeps-enabled");
+        let (mut app, front_id) = app_with_persisted_shitsuji_assignment(&sandbox);
+        assert_eq!(
+            app.shitsuji_agent_config,
+            toml::from_str::<crate::config::Config>(RUNTIME_ENABLED_SHITSUJI_CONFIG)
+                .unwrap()
+                .shitsuji_agent,
+            "an unchanged config is what puts this reload on the reconcile branch"
+        );
+
+        app.apply_config_from_disk(false);
+
+        assert!(
+            app.shitsuji_agent_config.runtime_enabled(),
+            "reload must keep reading [shitsuji_agent] from disk"
+        );
+        assert_eq!(
+            app.shitsuji_delivery.assigned_front_pane_ids(),
+            vec![front_id]
+        );
+        assert_eq!(
+            crate::persist::shitsuji_delivery::load().assigned_front_pane_ids(),
+            vec![front_id],
+            "the persisted delivery state must survive a reload"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shitsuji_delivery_is_dropped_when_a_reload_disables_the_runtime() {
+        let sandbox = ReloadSandbox::new("disables");
+        let (mut app, _front_id) = app_with_persisted_shitsuji_assignment(&sandbox);
+        sandbox.write_config(
+            r#"[shitsuji_agent]
+enabled = false
+backend_profile_id = "disabled-by-reload"
+"#,
+        );
+
+        app.apply_config_from_disk(false);
+
+        // Pins that the reload read the sandbox config. Without it the assertions
+        // below also pass when the sandbox leaks and the real config is read,
+        // which is the case that deletes the developer's delivery state.
+        assert_eq!(
+            app.shitsuji_agent_config.backend_profile_id,
+            "disabled-by-reload"
+        );
+        assert!(!app.shitsuji_agent_config.runtime_enabled());
+        assert!(app.shitsuji_delivery.assigned_front_pane_ids().is_empty());
+        assert!(
+            crate::persist::shitsuji_delivery::load()
+                .assigned_front_pane_ids()
+                .is_empty(),
+            "disabling the runtime must clear the persisted delivery state"
+        );
+    }
 }

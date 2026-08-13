@@ -113,6 +113,8 @@ readiness_interval_ms = 250
 - `readiness_attempts` sets the maximum number of transcript-readiness checks. Values from `2` through `100` are accepted.
 - `readiness_interval_ms` sets the delay between readiness checks. Values from `1` through `5000` milliseconds are accepted.
 
+Hot-reloads through `herdr server reload-config`, so `[shitsuji_agent]` is not a startup-only section. A reload that turns the runtime off — through `enabled = false` or through a value Herdr rejects — stops the shitsuji backends and discards completed turns that have not reached a backend yet. Proposed and approved rules are kept.
+
 Herdr does not install or depend on Claude or Codex hooks. It uses the same screen-based agent state detection as the rest of Herdr, binds the transcript when a detected agent starts working, and checks the provider completion boundary when that agent returns to idle.
 
 Claude transcripts are resolved below `$CLAUDE_CONFIG_DIR/projects`, or `~/.claude/projects` when that variable is unset. Codex transcripts are resolved below `$CODEX_HOME/sessions`, or `~/.codex/sessions` when that variable is unset. Herdr matches the current working directory and available session identity, and does not choose a transcript when multiple candidates remain ambiguous.
