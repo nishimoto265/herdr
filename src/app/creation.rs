@@ -50,6 +50,18 @@ impl App {
             .resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)
     }
 
+    pub(super) fn cwd_for_pane_in_workspace(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+    ) -> Option<PathBuf> {
+        let ws = self.state.workspaces.get(ws_idx)?;
+        let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
+        ws.tabs
+            .get(tab_idx)?
+            .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
+    }
+
     pub(super) fn follow_cwd_for_pane_in_workspace(
         &self,
         ws_idx: usize,

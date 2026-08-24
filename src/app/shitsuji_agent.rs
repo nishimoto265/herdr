@@ -513,11 +513,7 @@ impl App {
     ) -> Option<(PathBuf, Option<String>)> {
         let (ws_idx, pane) = self.find_pane(assignment.front_pane_id)?;
         let terminal = self.state.terminals.get(&pane.attached_terminal_id)?;
-        let cwd = self
-            .terminal_runtimes
-            .get(&pane.attached_terminal_id)
-            .and_then(|runtime| runtime.foreground_cwd().or_else(|| runtime.cwd()))
-            .unwrap_or_else(|| terminal.cwd.clone());
+        let cwd = self.follow_cwd_for_pane_in_workspace(ws_idx, assignment.front_pane_id)?;
         let workspace = self.state.workspaces.get(ws_idx)?;
         let paired = workspace.tabs.iter().any(|tab| {
             tab.backsides
@@ -539,24 +535,23 @@ impl App {
         if !self.shitsuji_agent_config.runtime_enabled() {
             return Err("shitsuji agent runtime is disabled".into());
         }
-        let (ws_idx, backside_terminal_id) = self
+        let (ws_idx, front_pane_id, backside_terminal_id) = self
             .state
             .workspaces
             .iter()
             .enumerate()
             .find_map(|(ws_idx, workspace)| {
-                workspace.tabs.iter().find_map(|tab| {
-                    tab.backsides
-                        .values()
-                        .find(|backside| backside.pane_id == backside_pane_id)
-                        .map(|backside| (ws_idx, backside.pane.attached_terminal_id.clone()))
-                })
+                let front_pane_id = workspace.front_pane_for_backside(backside_pane_id)?;
+                let backside_terminal_id = workspace.terminal_id(backside_pane_id)?.clone();
+                Some((ws_idx, front_pane_id, backside_terminal_id))
             })
             .ok_or_else(|| "backside pane is no longer assigned".to_string())?;
         let launch_env = self
             .pane_launch_env(ws_idx, backside_pane_id, Vec::new())
             .ok_or_else(|| "backside launch identity is unavailable".to_string())?;
-        let cwd = shitsuji_backend_runtime_cwd(backside_pane_id)?;
+        let cwd = self
+            .cwd_for_pane_in_workspace(ws_idx, front_pane_id)
+            .ok_or_else(|| "front pane working directory is unavailable".to_string())?;
         let old_runtime = self
             .terminal_runtimes
             .remove(&backside_terminal_id)
@@ -1099,21 +1094,6 @@ impl App {
         }
         Ok(())
     }
-}
-
-fn shitsuji_backend_runtime_cwd(
-    backside_pane_id: crate::layout::PaneId,
-) -> Result<PathBuf, String> {
-    let cwd = crate::session::data_dir()
-        .join("shitsuji-agent-runtime")
-        .join(format!("pane-{}", backside_pane_id.raw()));
-    std::fs::create_dir_all(&cwd).map_err(|error| {
-        format!(
-            "failed to create shitsuji backend runtime directory {}: {error}",
-            cwd.display()
-        )
-    })?;
-    Ok(cwd)
 }
 
 fn send_shitsuji_prompt_text_to_runtime(
@@ -1740,7 +1720,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backend_pending_start_uses_created_per_pane_internal_cwd() {
+    async fn backend_pending_start_uses_front_pane_cwd() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut config = crate::config::Config::default();
         config.shitsuji_agent.enabled = true;
@@ -1755,27 +1735,35 @@ mod tests {
         let front_id = app.state.workspaces[0].tabs[0].root_pane;
         let backside = &app.state.workspaces[0].tabs[0].backsides[&front_id];
         let back_id = backside.pane_id;
+        let backside_terminal_id = backside.pane.attached_terminal_id.clone();
         let front_terminal_id = app.state.workspaces[0]
             .pane_state(front_id)
             .unwrap()
             .attached_terminal_id
             .clone();
-        let front_cwd = app.state.terminals[&front_terminal_id].cwd.clone();
-        let expected_cwd = crate::session::data_dir()
-            .join("shitsuji-agent-runtime")
-            .join(format!("pane-{}", back_id.raw()));
-        let _ = std::fs::remove_dir_all(&expected_cwd);
+        let front_cwd = std::env::temp_dir();
+        // A restored backside can hold a cwd that differs from its front pane.
+        let restored_backside_cwd = std::env::current_dir().unwrap();
+        assert_ne!(front_cwd, restored_backside_cwd);
+        app.state.terminals.get_mut(&front_terminal_id).unwrap().cwd = front_cwd.clone();
+        app.state
+            .terminals
+            .get_mut(&backside_terminal_id)
+            .unwrap()
+            .cwd = restored_backside_cwd.clone();
         assert!(app.respawn_shell_for_launch_pane(back_id));
 
         app.start_shitsuji_backend(back_id).unwrap();
 
         let pending = &app.shitsuji_backend_pending_starts[&back_id];
-        assert_eq!(pending.cwd, expected_cwd);
-        assert_ne!(pending.cwd, front_cwd);
-        assert!(pending.cwd.is_dir());
+        assert_eq!(pending.cwd, front_cwd);
+        assert_ne!(pending.cwd, restored_backside_cwd);
+        assert_eq!(
+            app.state.terminals[&backside_terminal_id].cwd,
+            restored_backside_cwd
+        );
         assert_eq!(app.state.terminals[&front_terminal_id].cwd, front_cwd);
         app.shitsuji_backend_pending_starts.remove(&back_id);
-        let _ = std::fs::remove_dir_all(&expected_cwd);
     }
 
     #[tokio::test]

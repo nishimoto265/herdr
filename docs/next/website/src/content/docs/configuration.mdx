@@ -109,9 +109,27 @@ readiness_interval_ms = 250
 
 - `enabled` enables the feature. It defaults to `false`.
 - `backend_profile_id` identifies the backend profile associated with the shitsuji session. It must not be empty.
-- `backend_argv` is the executable and arguments used to replace the pane's resident backside with the shitsuji backend. Each array item is passed directly as an argument; Herdr does not parse this value through a shell.
+- `backend_argv` is the executable and arguments used to replace the pane's resident backside with the shitsuji backend. Each array item is passed directly as an argument; Herdr does not parse this value through a shell, so an executable that is not on `PATH` needs an absolute path here.
 - `readiness_attempts` sets the maximum number of transcript-readiness checks. Values from `2` through `100` are accepted.
 - `readiness_interval_ms` sets the delay between readiness checks. Values from `1` through `5000` milliseconds are accepted.
+
+The backend starts in the front pane's working directory, the directory that pane's shell reports. Herdr does not create a working directory of its own for the backend, so a backend that keys trust or history off the working directory stays aligned with the project the pane is working in.
+
+Codex needs extra configuration to work as the backend:
+
+```toml
+[shitsuji_agent]
+enabled = true
+backend_profile_id = "shitsuji-agent"
+backend_argv = [
+  "codex",
+  "-c", "auto_review={policy=\"on-request\"}",
+  "-c", "check_for_update_on_startup=false",
+  "-c", "sandbox_workspace_write={network_access=true}",
+]
+```
+
+`sandbox_workspace_write = { network_access = true }` is required. The backend reports through `herdr shitsuji submit`, which reaches the Herdr server over a Unix socket, and a sandboxed Codex without network access fails that call with `PermissionDenied`. Listing the socket directory in `writable_roots` does not help, because socket access is gated separately from write access. `check_for_update_on_startup = false` keeps a Codex update notice from holding the backend at startup. `auto_review = { policy = "on-request" }` is optional and matches the **Approve for me** entry in Codex's TUI menu; approval settings are not required, because the default approval policy works once network access is allowed.
 
 Hot-reloads through `herdr server reload-config`, so `[shitsuji_agent]` is not a startup-only section. A reload that turns the runtime off — through `enabled = false` or through a value Herdr rejects — stops the shitsuji backends and discards completed turns that have not reached a backend yet. Proposed and approved rules are kept.
 
