@@ -594,18 +594,16 @@ mod tests {
     #[test]
     fn total_active_rules_overload_is_detected_at_the_threshold() {
         let mut state = ShitsujiAgentState::default();
-        let profiles = ["backend", "frontend", "infra", "docs"];
-        let per_profile = TOTAL_ACTIVE_RULES_OVERLOAD_THRESHOLD / profiles.len();
-        for profile in profiles {
-            approve_rules(&mut state, profile, 0..per_profile - 1);
+        let per_profile = TOTAL_ACTIVE_RULES_OVERLOAD_THRESHOLD / 4;
+        for profile in ["backend", "frontend", "infra"] {
+            approve_rules(&mut state, profile, 0..per_profile);
         }
+        approve_rules(&mut state, "docs", 0..per_profile - 1);
         let below = state.rule_volume_overload();
         assert!(below.overloaded_profiles.is_empty());
         assert_eq!(below.overloaded_total_rules, None);
 
-        for profile in profiles {
-            approve_rules(&mut state, profile, per_profile - 1..per_profile);
-        }
+        approve_rules(&mut state, "docs", per_profile - 1..per_profile);
         let reached = state.rule_volume_overload();
         assert!(
             reached.overloaded_profiles.is_empty(),
