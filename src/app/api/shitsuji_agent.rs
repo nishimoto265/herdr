@@ -115,7 +115,7 @@ impl App {
         Ok(transition.proposal)
     }
 
-    /// Approval is the only moment the approved rule volume grows.
+    /// Approval is the only transition that adds an approved rule.
     fn report_rule_volume_overload(&self) {
         let overload = self.state.shitsuji_agent.rule_volume_overload();
         for (profile_id, rule_count) in overload.overloaded_profiles {
