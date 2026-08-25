@@ -6,7 +6,8 @@ use super::{
     ActiveRule, RuleProposal, RuleProposalChange, RuleProposalDecision,
     RuleProposalDecisionRequest, RuleProposalId, RuleProposalStatus, RuleProposalSubmission,
     RuleProposalSubmitInput, RuleProposalSubmitOutcome, ShitsujiBackendProfileId,
-    MAX_RULE_OBSERVATIONS_PER_SOURCE_EVENT, PROPOSAL_EVIDENCE_THRESHOLD,
+    ACTIVE_RULES_PER_PROFILE_OVERLOAD_THRESHOLD, MAX_RULE_OBSERVATIONS_PER_SOURCE_EVENT,
+    PROPOSAL_EVIDENCE_THRESHOLD, TOTAL_ACTIVE_RULES_OVERLOAD_THRESHOLD,
 };
 
 const MAX_RULE_TEXT_BYTES: usize = 16 * 1024;
@@ -56,6 +57,7 @@ pub(crate) enum SubmitError {
     FieldTooLong(&'static str),
     FingerprintConflict,
     InvalidControlCharacter(&'static str),
+    InvalidProfileIdShape,
     LimitExceeded(&'static str),
 }
 
@@ -72,6 +74,12 @@ impl std::fmt::Display for SubmitError {
             }
             Self::InvalidControlCharacter(field) => {
                 write!(f, "{field} contains an unsupported control character")
+            }
+            Self::InvalidProfileIdShape => {
+                write!(
+                    f,
+                    "target_profile_id must contain only lowercase letters, digits, and hyphens"
+                )
             }
             Self::LimitExceeded(limit) => write!(f, "{limit} limit exceeded"),
         }
@@ -109,6 +117,12 @@ impl std::fmt::Display for DecisionError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuleVolumeOverload {
+    pub overloaded_profiles: Vec<(ShitsujiBackendProfileId, usize)>,
+    pub overloaded_total_rules: Option<usize>,
+}
+
 impl ShitsujiAgentState {
     pub(crate) fn proposals(&self) -> impl Iterator<Item = &RuleProposal> {
         self.proposals.values()
@@ -116,6 +130,50 @@ impl ShitsujiAgentState {
 
     pub(crate) fn active_rules(&self) -> impl Iterator<Item = &ActiveRule> {
         self.active_rules.values().flat_map(BTreeMap::values)
+    }
+
+    /// Two distinct source events reach `PROPOSAL_EVIDENCE_THRESHOLD`, which is what turns an
+    /// observation into a proposal that can be approved.
+    #[cfg(test)]
+    pub(crate) fn approve_test_rule(&mut self, profile: &str, fingerprint: &str, rule_text: &str) {
+        let observation = RuleProposalSubmitInput {
+            rule_text: rule_text.into(),
+            target_profile_id: ShitsujiBackendProfileId::new(profile),
+            fingerprint: fingerprint.into(),
+            source_event_id: format!("{fingerprint}-event-1"),
+        };
+        self.submit(observation.clone())
+            .expect("first observation should be recorded");
+        let proposal = self
+            .submit(RuleProposalSubmitInput {
+                source_event_id: format!("{fingerprint}-event-2"),
+                ..observation
+            })
+            .expect("second observation should be recorded")
+            .submission
+            .proposal
+            .expect("second distinct event should create proposal");
+        self.decide(RuleProposalDecisionRequest {
+            proposal_id: proposal.proposal_id,
+            expected_revision: proposal.revision,
+            decision: RuleProposalDecision::Approve,
+        })
+        .expect("pending proposal should be approvable");
+    }
+
+    pub(crate) fn rule_volume_overload(&self) -> RuleVolumeOverload {
+        let overloaded_profiles = self
+            .active_rules
+            .iter()
+            .filter(|(_, rules)| rules.len() >= ACTIVE_RULES_PER_PROFILE_OVERLOAD_THRESHOLD)
+            .map(|(profile_id, rules)| (profile_id.clone(), rules.len()))
+            .collect();
+        let total_rules = scoped_len(&self.active_rules);
+        RuleVolumeOverload {
+            overloaded_profiles,
+            overloaded_total_rules: (total_rules >= TOTAL_ACTIVE_RULES_OVERLOAD_THRESHOLD)
+                .then_some(total_rules),
+        }
     }
 
     pub(crate) fn submit(
@@ -438,12 +496,24 @@ fn validate_submit_input(input: &RuleProposalSubmitInput) -> Result<(), SubmitEr
         input.target_profile_id.as_str(),
         MAX_IDENTIFIER_BYTES,
     )?;
+    validate_profile_id_shape(input.target_profile_id.as_str())?;
     validate_field("fingerprint", &input.fingerprint, MAX_IDENTIFIER_BYTES)?;
     validate_field(
         "source_event_id",
         &input.source_event_id,
         MAX_IDENTIFIER_BYTES,
     )
+}
+
+/// The submitting backend picks this value itself and it is embedded verbatim in later
+/// prompts, so the accepted shape is the only guard on what a profile id can carry.
+fn validate_profile_id_shape(value: &str) -> Result<(), SubmitError> {
+    if value.chars().all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+    }) {
+        return Ok(());
+    }
+    Err(SubmitError::InvalidProfileIdShape)
 }
 
 fn validate_field(field: &'static str, value: &str, max_bytes: usize) -> Result<(), SubmitError> {
@@ -472,6 +542,20 @@ mod tests {
         }
     }
 
+    fn approve_rules(
+        state: &mut ShitsujiAgentState,
+        profile: &str,
+        indices: std::ops::Range<usize>,
+    ) {
+        for index in indices {
+            state.approve_test_rule(
+                profile,
+                &format!("{profile}-rule-{index}"),
+                "Review callers affected by changed behavior.",
+            );
+        }
+    }
+
     fn pending_proposal(state: &mut ShitsujiAgentState) -> RuleProposal {
         state.submit(input("completion-1")).unwrap();
         state
@@ -480,6 +564,55 @@ mod tests {
             .submission
             .proposal
             .expect("second distinct event should create proposal")
+    }
+
+    #[test]
+    fn rule_profile_overload_is_detected_at_the_threshold() {
+        let mut state = ShitsujiAgentState::default();
+        approve_rules(
+            &mut state,
+            "backend",
+            0..ACTIVE_RULES_PER_PROFILE_OVERLOAD_THRESHOLD - 1,
+        );
+        assert!(state.rule_volume_overload().overloaded_profiles.is_empty());
+
+        approve_rules(
+            &mut state,
+            "backend",
+            ACTIVE_RULES_PER_PROFILE_OVERLOAD_THRESHOLD - 1
+                ..ACTIVE_RULES_PER_PROFILE_OVERLOAD_THRESHOLD,
+        );
+        assert_eq!(
+            state.rule_volume_overload().overloaded_profiles,
+            vec![(
+                ShitsujiBackendProfileId::new("backend"),
+                ACTIVE_RULES_PER_PROFILE_OVERLOAD_THRESHOLD
+            )]
+        );
+    }
+
+    #[test]
+    fn total_active_rules_overload_is_detected_at_the_threshold() {
+        let mut state = ShitsujiAgentState::default();
+        let per_profile = TOTAL_ACTIVE_RULES_OVERLOAD_THRESHOLD / 4;
+        for profile in ["backend", "frontend", "infra"] {
+            approve_rules(&mut state, profile, 0..per_profile);
+        }
+        approve_rules(&mut state, "docs", 0..per_profile - 1);
+        let below = state.rule_volume_overload();
+        assert!(below.overloaded_profiles.is_empty());
+        assert_eq!(below.overloaded_total_rules, None);
+
+        approve_rules(&mut state, "docs", per_profile - 1..per_profile);
+        let reached = state.rule_volume_overload();
+        assert!(
+            reached.overloaded_profiles.is_empty(),
+            "per-profile counts stay under their own threshold"
+        );
+        assert_eq!(
+            reached.overloaded_total_rules,
+            Some(TOTAL_ACTIVE_RULES_OVERLOAD_THRESHOLD)
+        );
     }
 
     #[test]
@@ -648,6 +781,24 @@ mod tests {
             state.submit(overflow).unwrap_err(),
             SubmitError::LimitExceeded("source event rule observation")
         );
+    }
+
+    #[test]
+    fn submit_rejects_profile_ids_outside_the_profile_id_shape() {
+        let mut state = ShitsujiAgentState::default();
+        for rejected in ["Backend", "back end", "back_end", "backend!"] {
+            let mut shaped = input("completion-1");
+            shaped.target_profile_id = ShitsujiBackendProfileId::new(rejected);
+            assert_eq!(
+                state.submit(shaped).unwrap_err(),
+                SubmitError::InvalidProfileIdShape,
+                "{rejected} should be rejected"
+            );
+        }
+
+        let mut accepted = input("completion-1");
+        accepted.target_profile_id = ShitsujiBackendProfileId::new("back-end-2");
+        assert!(state.submit(accepted).is_ok());
     }
 
     #[test]

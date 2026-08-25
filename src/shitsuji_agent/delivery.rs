@@ -88,6 +88,30 @@ pub(crate) struct DeliveryJob {
 }
 
 impl DeliveryJob {
+    #[cfg(test)]
+    pub(crate) fn test_new() -> Self {
+        Self {
+            assignment: AssignmentIdentity {
+                front_pane_id: PaneId::alloc(),
+                backside_pane_id: PaneId::alloc(),
+                generation: 7,
+            },
+            binding: TranscriptBinding {
+                provider: ConversationProvider::Codex,
+                data_root: std::path::PathBuf::from("/private"),
+                absolute_path: std::path::PathBuf::from("/private/session.jsonl"),
+                checkpoint: TranscriptCheckpoint {
+                    byte_offset: 10,
+                    identity: [7; 32],
+                },
+            },
+            completed: TranscriptCheckpoint {
+                byte_offset: 20,
+                identity: [7; 32],
+            },
+        }
+    }
+
     pub(crate) fn source_event_id(&self) -> String {
         format!(
             "front-{}-generation-{}-offset-{}",
@@ -203,28 +227,8 @@ impl ShitsujiDeliveryState {
 
     #[cfg(test)]
     pub(crate) fn with_test_in_flight_conversation() -> (Self, String) {
-        let front_pane_id = PaneId::alloc();
-        let backside_pane_id = PaneId::alloc();
-        let job = DeliveryJob {
-            assignment: AssignmentIdentity {
-                front_pane_id,
-                backside_pane_id,
-                generation: 7,
-            },
-            binding: TranscriptBinding {
-                provider: ConversationProvider::Codex,
-                data_root: std::path::PathBuf::from("/private"),
-                absolute_path: std::path::PathBuf::from("/private/session.jsonl"),
-                checkpoint: TranscriptCheckpoint {
-                    byte_offset: 10,
-                    identity: [7; 32],
-                },
-            },
-            completed: TranscriptCheckpoint {
-                byte_offset: 20,
-                identity: [7; 32],
-            },
-        };
+        let job = DeliveryJob::test_new();
+        let backside_pane_id = job.assignment.backside_pane_id;
         let source_event_id = job.source_event_id();
         let mut state = Self::default();
         state.backends.insert(
