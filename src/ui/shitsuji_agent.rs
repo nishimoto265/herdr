@@ -21,8 +21,8 @@ const SHITSUJI_CARD_HEADER_ROWS: usize = 2;
 /// Blank, `ASSIGNED AGENT`, its value, blank, and the decision row, pinned to the body bottom so
 /// the buttons stay visible and clickable no matter how far the rule text scrolls.
 const SHITSUJI_CARD_FOOTER_ROWS: usize = 5;
-/// Conventional profile id of the bundled shitsuji agent. `shitsuji_agent.backend_profile_id` has no
-/// default, so any other configured id is shown verbatim.
+/// Conventional profile id of the bundled shitsuji agent. Backends file rules under profile ids of
+/// their own choosing, so any other id is shown verbatim.
 const SHITSUJI_AGENT_PROFILE_ID: &str = "shitsuji-agent";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -108,7 +108,7 @@ readiness_interval_ms = 250
 ```
 
 - `enabled` enables the feature. It defaults to `false`.
-- `backend_profile_id` identifies the backend profile associated with the shitsuji session. It must not be empty.
+- `backend_profile_id` identifies the backend profile associated with the shitsuji session and appears in the backend's role prompt. It must not be empty, and it is otherwise free-form: unlike the profile a backend files a rule under, it is not restricted to lowercase letters, digits, and hyphens. It does not decide which approved rules the backend receives: the backend files each proposal under a profile of its own choosing, and every approved rule reaches every shitsuji backend, each rule carrying the profile it was filed under.
 - `backend_argv` is the executable and arguments used to replace the pane's resident backside with the shitsuji backend. Each array item is passed directly as an argument; Herdr does not parse this value through a shell, so an executable that is not on `PATH` needs an absolute path here.
 - `readiness_attempts` sets the maximum number of transcript-readiness checks. Values from `2` through `100` are accepted.
 - `readiness_interval_ms` sets the delay between readiness checks. Values from `1` through `5000` milliseconds are accepted.
@@ -130,6 +130,8 @@ backend_argv = [
 ```
 
 `sandbox_workspace_write = { network_access = true }` is required. The backend reports through `herdr shitsuji submit`, which reaches the Herdr server over a Unix socket, and a sandboxed Codex without network access fails that call with `PermissionDenied`. Listing the socket directory in `writable_roots` does not help, because socket access is gated separately from write access. `check_for_update_on_startup = false` keeps a Codex update notice from holding the backend at startup. `auto_review = { policy = "on-request" }` is optional and matches the **Approve for me** entry in Codex's TUI menu; approval settings are not required, because the default approval policy works once network access is allowed.
+
+Approved rules from every profile are embedded in each prompt Herdr sends the backend, and that payload is capped so an oversized rule set fails loudly instead of being truncated. Approving a rule logs a warning while there is still headroom: when one profile reaches 31 approved rules, which is the point to start using finer profiles, and when the approved rules reach 48 in total, which is three quarters of the cap. Past the cap the backend cannot be given its role prompt and stops starting. Approved rules cannot be withdrawn from Herdr's panel, so recovering from that state means removing rules from the stored `shitsuji-agent.json` and restarting Herdr.
 
 Hot-reloads through `herdr server reload-config`, so `[shitsuji_agent]` is not a startup-only section. A reload that turns the runtime off — through `enabled = false` or through a value Herdr rejects — stops the shitsuji backends and discards completed turns that have not reached a backend yet. Proposed and approved rules are kept.
 

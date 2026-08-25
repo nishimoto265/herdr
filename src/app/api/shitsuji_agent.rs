@@ -4,8 +4,8 @@ use crate::api::schema::{
 };
 use crate::app::App;
 use crate::shitsuji_agent::{
-    RuleProposal, RuleProposalDecisionRequest, RuleProposalSubmitInput, SubmitError,
-    SubmitTransition,
+    RuleProposal, RuleProposalDecision, RuleProposalDecisionRequest, RuleProposalSubmitInput,
+    SubmitError, SubmitTransition,
 };
 
 use super::responses::{encode_error, encode_success};
@@ -16,16 +16,6 @@ impl App {
         id: String,
         params: RuleProposalSubmitParams,
     ) -> String {
-        let expected_profile_id = crate::shitsuji_agent::ShitsujiBackendProfileId::new(
-            self.shitsuji_agent_config.backend_profile_id.trim(),
-        );
-        if params.target_profile_id != expected_profile_id {
-            return encode_error(
-                id,
-                "invalid_rule_proposal_target",
-                "target profile does not match the configured Shitsuji Agent profile",
-            );
-        }
         if !self
             .shitsuji_delivery
             .has_in_flight_source_event(&params.source_event_id)
@@ -95,6 +85,7 @@ impl App {
         request: RuleProposalDecisionRequest,
     ) -> Result<RuleProposal, String> {
         let previous = self.state.shitsuji_agent.clone();
+        let decision = request.decision;
         let transition = self
             .state
             .shitsuji_agent
@@ -118,7 +109,28 @@ impl App {
             });
         }
         self.state.sync_shitsuji_panel_proposals(true);
+        if decision == RuleProposalDecision::Approve {
+            self.report_rule_volume_overload();
+        }
         Ok(transition.proposal)
+    }
+
+    /// Approval is the only moment the approved rule volume grows.
+    fn report_rule_volume_overload(&self) {
+        let overload = self.state.shitsuji_agent.rule_volume_overload();
+        for (profile_id, rule_count) in overload.overloaded_profiles {
+            tracing::warn!(
+                profile_id = profile_id.as_str(),
+                rule_count,
+                "approved review rules for one profile are dense enough to split into finer profiles"
+            );
+        }
+        if let Some(total_rules) = overload.overloaded_total_rules {
+            tracing::warn!(
+                total_rules,
+                "approved review rules have reached the volume that risks failing shitsuji backend startup"
+            );
+        }
     }
 
     fn emit_shitsuji_proposal_transition(&mut self, transition: &SubmitTransition) {
@@ -220,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn submit_rejects_unknown_past_and_wrong_profile_sources() {
+    fn submit_rejects_unknown_and_past_source_events() {
         let mut app = test_app(crate::api::EventHub::default());
         let current_event = set_in_flight_conversation(&mut app);
 
@@ -230,13 +242,6 @@ mod tests {
         );
         let unknown: ErrorResponse = serde_json::from_str(&unknown).unwrap();
         assert_eq!(unknown.error.code, "invalid_rule_proposal_source_event");
-
-        let mut wrong_profile = submit(&current_event, "check-callers");
-        wrong_profile.target_profile_id = ShitsujiBackendProfileId::new("another-profile");
-        let wrong_profile =
-            app.handle_shitsuji_rule_proposal_submit("wrong-profile".into(), wrong_profile);
-        let wrong_profile: ErrorResponse = serde_json::from_str(&wrong_profile).unwrap();
-        assert_eq!(wrong_profile.error.code, "invalid_rule_proposal_target");
 
         let accepted = app.handle_shitsuji_rule_proposal_submit(
             "accepted".into(),
@@ -252,6 +257,58 @@ mod tests {
         );
         let past: ErrorResponse = serde_json::from_str(&past).unwrap();
         assert_eq!(past.error.code, "invalid_rule_proposal_source_event");
+        assert_eq!(app.state.shitsuji_agent.proposals().count(), 0);
+    }
+
+    #[test]
+    fn submit_accepts_profile_that_differs_from_config() {
+        let mut app = test_app(crate::api::EventHub::default());
+        let current_event = set_in_flight_conversation(&mut app);
+        let mut tagged = submit(&current_event, "check-callers");
+        tagged.target_profile_id = ShitsujiBackendProfileId::new("backend");
+
+        let response = app.handle_shitsuji_rule_proposal_submit("tagged".into(), tagged);
+
+        assert!(serde_json::from_str::<SuccessResponse>(&response).is_ok());
+        assert_ne!(
+            app.shitsuji_agent_config.backend_profile_id.as_str(),
+            "backend"
+        );
+        let profiles = app
+            .state
+            .shitsuji_agent
+            .proposals()
+            .map(|proposal| proposal.target_profile_id.as_str().to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            profiles.is_empty(),
+            "one observation stays below the evidence threshold"
+        );
+        let next_event = set_in_flight_conversation(&mut app);
+        let mut tagged_again = submit(&next_event, "check-callers");
+        tagged_again.target_profile_id = ShitsujiBackendProfileId::new("backend");
+        app.handle_shitsuji_rule_proposal_submit("tagged-again".into(), tagged_again);
+        let profiles = app
+            .state
+            .shitsuji_agent
+            .proposals()
+            .map(|proposal| proposal.target_profile_id.as_str().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(profiles, vec!["backend".to_string()]);
+    }
+
+    #[test]
+    fn submit_maps_invalid_profile_id_shape_to_invalid_rule_proposal() {
+        let mut app = test_app(crate::api::EventHub::default());
+        let current_event = set_in_flight_conversation(&mut app);
+        let mut unshaped = submit(&current_event, "check-callers");
+        unshaped.target_profile_id = ShitsujiBackendProfileId::new("Backend_1!");
+
+        let response = app.handle_shitsuji_rule_proposal_submit("unshaped".into(), unshaped);
+
+        let response: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(response.error.code, "invalid_rule_proposal");
+        assert_eq!(app.state.shitsuji_agent.active_rules().count(), 0);
         assert_eq!(app.state.shitsuji_agent.proposals().count(), 0);
     }
 
