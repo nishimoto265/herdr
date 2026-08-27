@@ -3210,7 +3210,7 @@ impl HeadlessServer {
             if !rect_fits_frame(info.inner_rect, &frame) {
                 retained_fallback!("pane_rect_outside_frame");
             }
-            let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
+            let Some(runtime) = self.app.state.displayed_runtime_for_pane_in_workspace(
                 &self.app.terminal_runtimes,
                 ws_idx,
                 info.id,
@@ -4457,6 +4457,69 @@ mod tests {
         server.resize_shared_runtime_to_effective_size();
 
         (server, client_rx, pane_id)
+    }
+
+    /// Registers a real per-terminal runtime for each face of the focused pane, backside hidden.
+    ///
+    /// `insert_test_runtime` cannot be used here: the `#[cfg(test)]` shortcuts in
+    /// `runtime_for_pane_in_workspace` and `displayed_runtime_for_pane_in_workspace` are both
+    /// keyed by pane id, so they hand back the same runtime for either face and a test built on
+    /// them passes even when the renderer reads the wrong one.
+    fn retained_backside_test_server(
+        front_screen: &[u8],
+        back_screen: &[u8],
+    ) -> (
+        HeadlessServer,
+        std::sync::mpsc::Receiver<Vec<u8>>,
+        crate::layout::PaneId,
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalId,
+    ) {
+        let mut server = test_headless_server();
+        let workspace = crate::workspace::Workspace::test_new("test");
+        let pane_id = workspace.focused_pane_id().expect("focused pane");
+        let [front_terminal_id, back_terminal_id] = workspace
+            .terminal_ids_for_slot(pane_id)
+            .expect("slot terminal ids");
+        let front_terminal_id = front_terminal_id.clone();
+        let back_terminal_id = back_terminal_id.clone();
+        server.app.terminal_runtimes.insert(
+            front_terminal_id.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, front_screen),
+        );
+        server.app.terminal_runtimes.insert(
+            back_terminal_id.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, back_screen),
+        );
+        server.app.state.workspaces = vec![workspace];
+        server.app.state.active = Some(0);
+        server.app.state.selected = 0;
+        server.app.state.mode = crate::app::Mode::Terminal;
+
+        let (client_tx, _client_control_rx, client_rx) = test_client_writer();
+        server.clients.insert(
+            1,
+            ClientConnection::new(
+                (80, 24),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                None,
+                1,
+                RenderEncoding::SemanticFrame,
+                Some(client_tx),
+            ),
+        );
+        server.foreground_client_id = Some(1);
+        server.sync_foreground_client_state();
+        server.resize_shared_runtime_to_effective_size();
+
+        (
+            server,
+            client_rx,
+            pane_id,
+            front_terminal_id,
+            back_terminal_id,
+        )
     }
 
     fn assert_frame_data_eq(actual: &FrameData, expected: &FrameData) {
@@ -7477,6 +7540,107 @@ next_tab = ""
             full_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("full frame"),
+        );
+        assert_frame_data_eq(&retained_frame, &full_frame);
+    }
+
+    /// Walks the flow that produced the flicker: the front face is rendered first, so its dirty
+    /// tracking is warm, and the backside is only then flipped into view. Both faces are dirty
+    /// with a different character at the same cell, so the streamed frame says which face the
+    /// retained path read. Reading the front there painted front output over the shown backside
+    /// until the next full render put the backside back.
+    #[tokio::test]
+    async fn retained_pty_update_matches_full_render_frame_while_the_backside_is_shown() {
+        let front_screen = b"front face";
+        let back_screen = b"back face";
+        let front_update = b"\rF";
+        let back_update = b"\r\x1b[44mB\x1b[0m";
+        let (
+            mut retained_server,
+            retained_rx,
+            retained_pane_id,
+            retained_front_id,
+            retained_back_id,
+        ) = retained_backside_test_server(front_screen, back_screen);
+        let (mut full_server, full_rx, full_pane_id, full_front_id, full_back_id) =
+            retained_backside_test_server(front_screen, back_screen);
+
+        for (server, rx, pane_id, back_id) in [
+            (
+                &mut retained_server,
+                &retained_rx,
+                retained_pane_id,
+                &retained_back_id,
+            ),
+            (&mut full_server, &full_rx, full_pane_id, &full_back_id),
+        ] {
+            server.render_and_stream();
+            let _ = rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("front baseline");
+            let workspace = server
+                .app
+                .state
+                .workspaces
+                .first_mut()
+                .expect("test workspace");
+            assert!(
+                workspace.toggle_backside(pane_id),
+                "test pane must have a backside"
+            );
+            assert_eq!(
+                workspace.displayed_terminal_id(pane_id),
+                Some(back_id),
+                "backside must be the displayed face"
+            );
+            server.render_and_stream();
+            let _ = rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("backside baseline");
+        }
+
+        for (server, front_id, back_id) in [
+            (&retained_server, &retained_front_id, &retained_back_id),
+            (&full_server, &full_front_id, &full_back_id),
+        ] {
+            server
+                .app
+                .terminal_runtimes
+                .get(front_id)
+                .expect("front runtime")
+                .test_process_pty_bytes(front_update);
+            server
+                .app
+                .terminal_runtimes
+                .get(back_id)
+                .expect("back runtime")
+                .test_process_pty_bytes(back_update);
+        }
+
+        assert!(retained_server.render_retained_pty_update_and_stream());
+        full_server.render_and_stream();
+
+        let retained_frame = read_server_frame(
+            retained_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("retained frame"),
+        );
+        let full_frame = read_server_frame(
+            full_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("full frame"),
+        );
+        assert!(
+            full_frame.cells.iter().any(|cell| cell.symbol == "B"),
+            "full render must show the backside update"
+        );
+        assert!(
+            !full_frame.cells.iter().any(|cell| cell.symbol == "F"),
+            "full render must not show the hidden front update"
+        );
+        assert!(
+            !retained_frame.cells.iter().any(|cell| cell.symbol == "F"),
+            "retained update must not paint the hidden front face over the shown backside"
         );
         assert_frame_data_eq(&retained_frame, &full_frame);
     }
